@@ -41,10 +41,10 @@ const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const crypto = __importStar(require("crypto"));
 const child_process_1 = require("child_process");
-const DEFAULT_PRESETS = [
+const CANDIDATE_PRESETS = [
     {
         id: "agy",
-        label: "AGY",
+        label: "Antigravity (agy)",
         badge: "✦",
         color: "#3b82f6",
         command: "agy",
@@ -52,7 +52,7 @@ const DEFAULT_PRESETS = [
     },
     {
         id: "claude",
-        label: "Claude",
+        label: "Claude Code",
         badge: "C",
         color: "#e07a5f",
         command: "claude",
@@ -60,24 +60,87 @@ const DEFAULT_PRESETS = [
     },
     {
         id: "codex",
-        label: "Codex",
+        label: "Codex CLI",
         badge: "X",
         color: "#10b981",
         command: "codex",
         args: [],
     },
     {
+        id: "gemini",
+        label: "Gemini CLI",
+        badge: "G",
+        color: "#8b5cf6",
+        command: "gemini",
+        args: [],
+    },
+    {
+        id: "aider",
+        label: "Aider",
+        badge: "A",
+        color: "#14b8a6",
+        command: "aider",
+        args: [],
+    },
+    {
         id: "powershell",
-        label: "Shell",
+        label: "PowerShell",
         badge: ">_",
         color: "#64748b",
         command: "powershell.exe",
         args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
     },
+    {
+        id: "cmd",
+        label: "Command Prompt",
+        badge: "CMD",
+        color: "#475569",
+        command: "cmd.exe",
+        args: [],
+    },
 ];
+function isExecutableInstalled(command) {
+    const lower = command.toLowerCase();
+    if (lower === "powershell.exe" || lower === "powershell" || lower === "cmd.exe" || lower === "cmd") {
+        return true;
+    }
+    const home = os.homedir();
+    const searchDirs = (process.env.PATH || "")
+        .split(path.delimiter)
+        .filter(Boolean);
+    searchDirs.push(path.join(home, ".local", "bin"), path.join(home, ".cargo", "bin"), path.join(home, ".gemini", "antigravity-cli", "bin"));
+    if (process.env.APPDATA) {
+        searchDirs.push(path.join(process.env.APPDATA, "npm"));
+    }
+    if (process.env.LOCALAPPDATA) {
+        searchDirs.push(path.join(process.env.LOCALAPPDATA, "Programs", "antigravity", "bin"), path.join(process.env.LOCALAPPDATA, "Programs", "antigravity"), path.join(process.env.LOCALAPPDATA, "Programs", "Antigravity IDE", "bin"));
+    }
+    const exts = path.extname(command)
+        ? [""]
+        : [".exe", ".cmd", ".bat", ".ps1", ""];
+    for (const dir of searchDirs) {
+        for (const ext of exts) {
+            const candidate = path.join(dir, `${command}${ext}`);
+            try {
+                if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+                    return true;
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    return false;
+}
+function getInstalledPresets() {
+    const installed = CANDIDATE_PRESETS.filter((p) => isExecutableInstalled(p.command));
+    return installed.length > 0 ? installed : CANDIDATE_PRESETS.slice(0, 2);
+}
 const STORAGE_KEY = "agentCockpit.retainedSessions.v3";
 const DISMISSED_KEY = "agentCockpit.dismissedCliIds.v1";
 const SOUND_PREF_KEY = "agentCockpit.soundEnabled.v1";
+const LAST_CLI_KEY = "agentCockpit.lastUsedCliId.v1";
 function isTerminalAlive(term) {
     if (!term)
         return false;
@@ -769,12 +832,18 @@ class AgentCockpitProvider {
     _currentCwd;
     _defaultLocation = "editor";
     _soundEnabled;
+    _lastUsedCliId;
     _pollTimer;
     constructor(_context) {
         this._context = _context;
         const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         this._currentCwd = wsFolder || "D:\\Thulir Inc";
         this._soundEnabled = this._context.globalState.get(SOUND_PREF_KEY, true);
+        const installed = getInstalledPresets();
+        this._lastUsedCliId =
+            this._context.globalState.get(LAST_CLI_KEY) ||
+                installed[0]?.id ||
+                "agy";
         const savedDismissed = this._context.globalState.get(DISMISSED_KEY) || [];
         this._dismissedCliIds = new Set(savedDismissed);
         const saved = this._context.globalState.get(STORAGE_KEY) || [];
@@ -1054,7 +1123,18 @@ class AgentCockpitProvider {
                     }
                     await this.refreshWebviewState();
                     break;
+                case "selectCliPreset":
+                    if (typeof msg.presetId === "string" && msg.presetId) {
+                        this._lastUsedCliId = msg.presetId;
+                        await this._context.globalState.update(LAST_CLI_KEY, this._lastUsedCliId);
+                        await this.refreshWebviewState();
+                    }
+                    break;
                 case "spawnSession":
+                    if (typeof msg.presetId === "string" && msg.presetId) {
+                        this._lastUsedCliId = msg.presetId;
+                        await this._context.globalState.update(LAST_CLI_KEY, this._lastUsedCliId);
+                    }
                     await this.spawnSession({
                         title: msg.title,
                         badge: msg.badge || ">_",
@@ -1552,6 +1632,10 @@ class AgentCockpitProvider {
         const skillsAndAgents = discoverSkillsAndAgents(this._currentCwd);
         const wbConfig = vscode.workspace.getConfiguration("workbench.editor");
         const showTabs = wbConfig.get("showTabs") || "multiple";
+        const installedPresets = getInstalledPresets();
+        const validLastCliId = installedPresets.some((p) => p.id === this._lastUsedCliId)
+            ? this._lastUsedCliId
+            : installedPresets[0]?.id || "agy";
         this._view.webview.postMessage({
             type: "state",
             currentCwd: this._currentCwd,
@@ -1559,8 +1643,9 @@ class AgentCockpitProvider {
             defaultLocation: this._defaultLocation,
             topTabsHidden: showTabs === "none",
             soundEnabled: this._soundEnabled,
+            lastUsedCliId: validLastCliId,
             activeSessionId: this._activeSessionId,
-            presets: DEFAULT_PRESETS,
+            presets: installedPresets,
             gitBranch: gitInfo.branch,
             gitChanges: gitInfo.changes,
             mcpServers,
@@ -1712,33 +1797,54 @@ class AgentCockpitProvider {
       background: var(--md-primary-bg);
     }
 
-    /* Material Agent Launch Buttons */
+    /* Material Split Launch Bar: 1-Click Last Used CLI + Installed CLI Dropdown */
     .launch-bar {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr) 32px;
-      gap: 5px;
+      display: flex;
+      align-items: stretch;
+      gap: 6px;
     }
-    .md-btn {
+    .launch-primary-btn {
+      flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 5px;
-      background: var(--md-surface);
-      border: 1px solid var(--md-border);
+      gap: 7px;
+      background: var(--md-primary);
+      color: #ffffff;
+      border: 1px solid var(--md-primary);
       border-radius: var(--md-radius);
       box-shadow: var(--md-shadow-sm);
-      color: var(--md-fg);
-      padding: 7px 5px;
-      font-size: 11px;
+      padding: 8px 10px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.14s ease;
     }
-    .md-btn:hover {
-      border-color: var(--md-primary);
-      background: var(--md-surface-hover);
+    .launch-primary-btn:hover {
+      background: #2563eb;
       box-shadow: var(--md-shadow-md);
       transform: translateY(-1px);
+    }
+    .launch-primary-btn:active {
+      transform: translateY(0);
+    }
+    .cli-select {
+      width: 128px;
+      background: var(--md-surface);
+      color: var(--md-fg);
+      border: 1px solid var(--md-border);
+      border-radius: var(--md-radius);
+      box-shadow: var(--md-shadow-sm);
+      padding: 6px 8px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.14s, box-shadow 0.14s;
+    }
+    .cli-select:hover, .cli-select:focus {
+      border-color: var(--md-primary);
+      box-shadow: var(--md-shadow-md);
     }
     .agent-dot {
       width: 17px;
@@ -2073,10 +2179,13 @@ class AgentCockpitProvider {
     </button>
   </div>
 
-  <!-- Material Agent Launch Buttons -->
+  <!-- Material 1-Click Launch Last Used CLI + Installed CLI Dropdown -->
   <div class="launch-bar">
-    <div id="preset-buttons" style="display:contents;"></div>
-    <button id="custom-toggle" class="md-btn" title="Launch custom CLI command">+</button>
+    <button id="launch-last-btn" class="launch-primary-btn" title="1-click launch your last used CLI agent">
+      <span id="launch-last-dot" class="agent-dot" style="background:rgba(255,255,255,0.22);">✦</span>
+      <span id="launch-last-label">Launch AGY</span>
+    </button>
+    <select id="cli-dropdown" class="cli-select" title="Select from installed CLIs on this PC"></select>
   </div>
 
   <div id="custom-drawer" class="custom-drawer">
@@ -2165,8 +2274,10 @@ class AgentCockpitProvider {
     const soundToggle = document.getElementById("sound-toggle");
     const zenTabsToggle = document.getElementById("zen-tabs-toggle");
     const wtToggle = document.getElementById("wt-toggle");
-    const presetButtons = document.getElementById("preset-buttons");
-    const customToggle = document.getElementById("custom-toggle");
+    const launchLastBtn = document.getElementById("launch-last-btn");
+    const launchLastDot = document.getElementById("launch-last-dot");
+    const launchLastLabel = document.getElementById("launch-last-label");
+    const cliDropdown = document.getElementById("cli-dropdown");
     const customDrawer = document.getElementById("custom-drawer");
     const customCmd = document.getElementById("custom-cmd");
     const customGo = document.getElementById("custom-go");
@@ -2228,9 +2339,42 @@ class AgentCockpitProvider {
       wtToggle.classList.toggle("active", state.useWorktree);
     });
 
-    customToggle.addEventListener("click", () => {
-      customDrawer.classList.toggle("open");
-      if (customDrawer.classList.contains("open")) customCmd.focus();
+    function spawnPreset(p) {
+      if (!p) return;
+      vscode.postMessage({
+        type: "spawnSession",
+        presetId: p.id,
+        title: p.label.split(" ")[0],
+        badge: p.badge,
+        color: p.color,
+        command: p.command,
+        args: p.args,
+        cwd: state.currentCwd,
+        location: state.defaultLocation,
+        useWorktree: state.useWorktree,
+      });
+    }
+
+    launchLastBtn.addEventListener("click", () => {
+      const presets = state.presets || [];
+      const activePreset =
+        presets.find((p) => p.id === state.lastUsedCliId) || presets[0];
+      if (activePreset) {
+        spawnPreset(activePreset);
+      }
+    });
+
+    cliDropdown.addEventListener("change", () => {
+      const val = cliDropdown.value;
+      if (val === "__custom__") {
+        customDrawer.classList.add("open");
+        customCmd.focus();
+        cliDropdown.value = state.lastUsedCliId;
+        return;
+      }
+      customDrawer.classList.remove("open");
+      state.lastUsedCliId = val;
+      vscode.postMessage({ type: "selectCliPreset", presetId: val });
     });
 
     function launchCustom() {
@@ -2356,30 +2500,32 @@ class AgentCockpitProvider {
       soundToggle.classList.toggle("active", Boolean(msg.soundEnabled));
       zenTabsToggle.classList.toggle("active", Boolean(msg.topTabsHidden));
 
-      // Material Agent Launch Buttons
-      presetButtons.innerHTML = "";
-      (msg.presets || []).forEach((p) => {
-        const btn = document.createElement("button");
-        btn.className = "md-btn";
-        btn.title = "Launch " + p.label + " (" + p.command + ")";
-        btn.innerHTML =
-          '<span class="agent-dot" style="background:' + p.color + ';">' + p.badge + '</span>' +
-          '<span>' + p.label + '</span>';
-        btn.addEventListener("click", () => {
-          vscode.postMessage({
-            type: "spawnSession",
-            title: p.label,
-            badge: p.badge,
-            color: p.color,
-            command: p.command,
-            args: p.args,
-            cwd: state.currentCwd,
-            location: state.defaultLocation,
-            useWorktree: state.useWorktree,
-          });
-        });
-        presetButtons.appendChild(btn);
+      state.presets = msg.presets || [];
+      state.lastUsedCliId = msg.lastUsedCliId || (state.presets[0] && state.presets[0].id);
+
+      const selectedPreset =
+        state.presets.find((p) => p.id === state.lastUsedCliId) ||
+        state.presets[0];
+
+      if (selectedPreset) {
+        launchLastDot.textContent = selectedPreset.badge;
+        launchLastLabel.textContent = "Launch " + selectedPreset.label.split(" ")[0];
+        launchLastBtn.title =
+          "1-Click Launch " + selectedPreset.label + " (" + selectedPreset.command + ")";
+      }
+
+      cliDropdown.innerHTML = "";
+      state.presets.forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.badge + " " + p.label;
+        if (p.id === state.lastUsedCliId) opt.selected = true;
+        cliDropdown.appendChild(opt);
       });
+      const customOpt = document.createElement("option");
+      customOpt.value = "__custom__";
+      customOpt.textContent = "+ Custom CLI…";
+      cliDropdown.appendChild(customOpt);
 
       // Material Session Cards
       sessionList.innerHTML = "";
@@ -2526,8 +2672,9 @@ function activate(context) {
     const provider = new AgentCockpitProvider(context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(AgentCockpitProvider.viewType, provider, { webviewOptions: { retainContextWhenHidden: true } }));
     context.subscriptions.push(vscode.commands.registerCommand("agentCockpit.newSession", async () => {
+        const installed = getInstalledPresets();
         const picked = await vscode.window.showQuickPick([
-            ...DEFAULT_PRESETS.map((p) => ({
+            ...installed.map((p) => ({
                 label: p.label,
                 description: p.command,
                 preset: p,
@@ -2537,7 +2684,7 @@ function activate(context) {
                 description: "Enter executable",
                 preset: null,
             },
-        ], { placeHolder: "Launch Agent" });
+        ], { placeHolder: "Launch Installed CLI Agent" });
         if (!picked)
             return;
         const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || "D:\\Thulir Inc";
