@@ -761,6 +761,128 @@ function discoverClaudeSessionsForCwd(cwd) {
     }
     return results.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
+function extractTranscriptSummaryForHandoff(session) {
+    const userPrompts = [];
+    const assistantReplies = [];
+    const cmd = (session.command || "").trim().toLowerCase();
+    const home = os.homedir();
+    // 1. Antigravity (agy) transcript
+    if ((cmd === "agy" || cmd === "agy.cmd" || cmd === "agy.exe") &&
+        session.cliSessionId) {
+        const transcriptPath = path.join(home, ".gemini", "antigravity-cli", "brain", session.cliSessionId, ".system_generated", "logs", "transcript.jsonl");
+        if (fs.existsSync(transcriptPath)) {
+            try {
+                const lines = fs
+                    .readFileSync(transcriptPath, "utf8")
+                    .split(/\r?\n/)
+                    .filter((l) => l.trim());
+                for (const line of lines) {
+                    try {
+                        const obj = JSON.parse(line);
+                        if ((obj.source === "USER_EXPLICIT" || obj.type === "USER_INPUT") &&
+                            typeof obj.content === "string") {
+                            const m = obj.content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
+                            const text = (m ? m[1] : obj.content).replace(/\s+/g, " ").trim();
+                            if (text)
+                                userPrompts.push(text.slice(0, 320));
+                        }
+                        else if (obj.source === "MODEL" &&
+                            typeof obj.content === "string" &&
+                            obj.content.trim()) {
+                            assistantReplies.push(obj.content.trim().slice(0, 900));
+                        }
+                    }
+                    catch {
+                        // ignore
+                    }
+                }
+                return {
+                    userPrompts: userPrompts.slice(-5),
+                    assistantReplies: assistantReplies.slice(-3),
+                    sourceFound: userPrompts.length > 0 || assistantReplies.length > 0,
+                };
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    // 2. Claude Code transcript
+    if ((cmd === "claude" || cmd === "claude.exe") &&
+        session.cliSessionId) {
+        const projectsRoot = path.join(home, ".claude", "projects");
+        let jsonlPath = path.join(projectsRoot, claudeProjectSlug(session.cwd), `${session.cliSessionId}.jsonl`);
+        if (!fs.existsSync(jsonlPath) && fs.existsSync(projectsRoot)) {
+            try {
+                for (const dir of fs.readdirSync(projectsRoot)) {
+                    const candidate = path.join(projectsRoot, dir, `${session.cliSessionId}.jsonl`);
+                    if (fs.existsSync(candidate)) {
+                        jsonlPath = candidate;
+                        break;
+                    }
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+        if (fs.existsSync(jsonlPath)) {
+            try {
+                const lines = fs
+                    .readFileSync(jsonlPath, "utf8")
+                    .split(/\r?\n/)
+                    .filter((l) => l.trim());
+                for (const line of lines) {
+                    try {
+                        const obj = JSON.parse(line);
+                        if (obj.type === "user" && obj.message?.role === "user") {
+                            const rawContent = obj.message.content;
+                            const isToolResult = Array.isArray(rawContent) &&
+                                rawContent.some((p) => p && p.type === "tool_result");
+                            if (!isToolResult) {
+                                let text = "";
+                                if (typeof rawContent === "string") {
+                                    text = rawContent;
+                                }
+                                else if (Array.isArray(rawContent)) {
+                                    const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
+                                    if (textPart)
+                                        text = textPart.text;
+                                }
+                                const cleaned = text.replace(/\s+/g, " ").trim();
+                                if (cleaned)
+                                    userPrompts.push(cleaned.slice(0, 320));
+                            }
+                        }
+                        else if (obj.type === "assistant" &&
+                            obj.message?.role === "assistant" &&
+                            Array.isArray(obj.message.content)) {
+                            const textParts = obj.message.content
+                                .filter((p) => p && p.type === "text" && typeof p.text === "string")
+                                .map((p) => p.text.trim())
+                                .filter(Boolean);
+                            if (textParts.length > 0) {
+                                assistantReplies.push(textParts.join("\n").slice(0, 900));
+                            }
+                        }
+                    }
+                    catch {
+                        // ignore
+                    }
+                }
+                return {
+                    userPrompts: userPrompts.slice(-5),
+                    assistantReplies: assistantReplies.slice(-3),
+                    sourceFound: userPrompts.length > 0 || assistantReplies.length > 0,
+                };
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    return { userPrompts: [], assistantReplies: [], sourceFound: false };
+}
 function summarizeFirstLine(raw, label) {
     const firstLine = raw
         .split(/\r?\n/)
@@ -1351,6 +1473,9 @@ class AgentCockpitProvider {
                     }
                     break;
                 }
+                case "handoffSession":
+                    await this.handoffSessionToTarget(typeof msg.id === "string" ? msg.id : undefined);
+                    break;
                 case "refreshGit":
                     this._syncCliStoredSessionNames();
                     await this.refreshWebviewState();
@@ -1835,6 +1960,166 @@ class AgentCockpitProvider {
             vscode.window.showErrorMessage(`Failed saving handoff.md: ${msg}`);
         }
         return textToWrite;
+    }
+    /**
+     * 1-Click Handoff: extracts real conversation context from a source chat session,
+     * writes structured handoff notes to .agent/handoff.md, and sends them to a chosen target session.
+     */
+    async handoffSessionToTarget(sourceSessionId) {
+        this._syncLiveness();
+        this._syncCliStoredSessionNames();
+        const source = (sourceSessionId
+            ? this._sessions.find((s) => s.id === sourceSessionId)
+            : undefined) ||
+            this._sessions.find((s) => s.id === this._activeSessionId) ||
+            this._sessions[0];
+        if (!source) {
+            vscode.window.showWarningMessage("No source session found to generate handoff notes from.");
+            return;
+        }
+        const otherSessions = this._sessions.filter((s) => s.id !== source.id);
+        const items = otherSessions.map((s) => {
+            const cli = path
+                .basename((s.command || "cli").trim().toLowerCase(), path.extname(s.command || ""))
+                .replace(/^powershell$/, "ps1");
+            return {
+                label: s.title,
+                description: `${cli} · ${path.basename(s.cwd)}`,
+                detail: s.status === "stopped" ? "Paused — will auto-resume and receive handoff" : `Live (${s.status})`,
+                sessionId: s.id,
+            };
+        });
+        const installed = getInstalledPresets();
+        for (const p of installed) {
+            items.push({
+                label: `$(add) New ${p.label} Session`,
+                description: p.command,
+                detail: `Launch a fresh ${p.label} session and send handoff notes`,
+                launchNew: true,
+                preset: p,
+            });
+        }
+        const picked = await vscode.window.showQuickPick(items, {
+            title: `Handoff from "${source.title}"`,
+            placeHolder: "Choose the target chat session to receive handoff notes…",
+        });
+        if (!picked)
+            return;
+        // 1. Extract real conversation transcript + git context from source session
+        const transcript = extractTranscriptSummaryForHandoff(source);
+        const gitInfo = await this._getGitChanges(source.cwd || this._currentCwd);
+        const sourceCli = path
+            .basename((source.command || "cli").trim().toLowerCase(), path.extname(source.command || ""))
+            .replace(/^powershell$/, "ps1");
+        const userLines = transcript.userPrompts.length > 0
+            ? transcript.userPrompts.map((p, idx) => `${idx + 1}. ${p}`).join("\n")
+            : "- (No transcript prompts captured — check recent workspace changes below)";
+        const assistantLines = transcript.assistantReplies.length > 0
+            ? transcript.assistantReplies
+                .map((r, idx) => `### Turn ${idx + 1}\n${r}`)
+                .join("\n\n")
+            : "- (No assistant transcript found on disk for this CLI)";
+        const gitLines = gitInfo.changes.length > 0
+            ? gitInfo.changes.map((c) => `- \`${c.status}\` ${c.file}`).join("\n")
+            : "- Clean working tree";
+        const handoffMarkdown = [
+            `# Handoff from "${source.title}" (${sourceCli})`,
+            `- **Generated**: ${new Date().toISOString()}`,
+            `- **Workspace**: \`${source.cwd}\``,
+            gitInfo.branch ? `- **Git Branch**: \`${gitInfo.branch}\`` : "",
+            source.cliSessionId ? `- **Source Session ID**: \`${source.cliSessionId}\`` : "",
+            ``,
+            `## Recent User Requests`,
+            userLines,
+            ``,
+            `## Latest Progress & Assistant Context`,
+            assistantLines,
+            ``,
+            `## Modified / Untracked Files`,
+            gitLines,
+            ``,
+            `## Next Action`,
+            `Continue seamlessly from the context above. Confirm you have read this handoff and proceed.`,
+        ]
+            .filter((line) => line !== undefined)
+            .join("\n");
+        // 2. Write .agent/handoff.md into workspace (and target cwd if different)
+        const writeHandoffTo = (dir) => {
+            const targetFile = path.join(dir, ".agent", "handoff.md");
+            fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+            fs.writeFileSync(targetFile, handoffMarkdown + "\n", "utf8");
+        };
+        try {
+            writeHandoffTo(this._currentCwd);
+            if (source.cwd && source.cwd.toLowerCase() !== this._currentCwd.toLowerCase()) {
+                writeHandoffTo(source.cwd);
+            }
+        }
+        catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            vscode.window.showErrorMessage(`Failed writing .agent/handoff.md: ${errMsg}`);
+            return;
+        }
+        // 3. Focus/resume or launch target session and send the handoff prompt
+        const promptToSend = `Read .agent/handoff.md (handoff generated from "${source.title}") and continue from there.`;
+        let targetTitle = picked.label;
+        if (picked.launchNew && picked.preset) {
+            const p = picked.preset;
+            targetTitle = p.label;
+            await this.spawnSession({
+                title: `${p.label.split(" ")[0]} · Handoff`,
+                badge: p.badge,
+                color: p.color,
+                command: p.command,
+                args: p.args,
+                cwd: source.cwd || this._currentCwd,
+                location: this._defaultLocation,
+            });
+            // Give the newly launched CLI a moment to initialize before sending the handoff prompt
+            const newSession = this._sessions[this._sessions.length - 1];
+            setTimeout(() => {
+                if (newSession && newSession.terminal && isTerminalAlive(newSession.terminal)) {
+                    newSession.terminal.show(false);
+                    newSession.terminal.sendText(promptToSend, true);
+                }
+            }, 2800);
+        }
+        else if (picked.sessionId) {
+            const target = this._sessions.find((s) => s.id === picked.sessionId);
+            if (!target)
+                return;
+            targetTitle = target.title;
+            if (target.cwd && target.cwd.toLowerCase() !== this._currentCwd.toLowerCase()) {
+                try {
+                    writeHandoffTo(target.cwd);
+                }
+                catch {
+                    // ignore
+                }
+            }
+            const wasStopped = !isTerminalAlive(target.terminal) && !this._findOrphanTerminal(target);
+            await this.focusOrRelaunchSessionById(target.id);
+            if (wasStopped) {
+                setTimeout(() => {
+                    if (target.terminal && isTerminalAlive(target.terminal)) {
+                        target.terminal.show(false);
+                        target.terminal.sendText(promptToSend, true);
+                    }
+                }, 2800);
+            }
+            else if (target.terminal) {
+                target.terminal.show(false);
+                target.terminal.sendText(promptToSend, true);
+                try {
+                    await vscode.commands.executeCommand("workbench.action.terminal.focus");
+                }
+                catch {
+                    // ignore
+                }
+            }
+        }
+        await this.refreshWebviewState();
+        vscode.window.setStatusBarMessage(`Agent Cockpit: Handed off "${source.title}" → "${targetTitle}" (.agent/handoff.md)`, 4500);
     }
     async openHandoffInEditor() {
         const p = this._getHandoffPath();
@@ -2587,9 +2872,10 @@ class AgentCockpitProvider {
     <div id="skills-drawer" class="drawer-pane"></div>
     <div id="notes-drawer" class="drawer-pane">
       <textarea id="handoff-text" rows="3" placeholder="Shared handoff notes (.agent/handoff.md)…"></textarea>
-      <div style="display:flex;gap:6px;">
+      <div style="display:flex;gap:5px;">
         <button id="save-notes" class="footer-btn" style="flex:1;">Save</button>
-        <button id="send-notes" class="send-btn" style="flex:1;padding:6px;">Send to Agent</button>
+        <button id="handoff-chat-btn" class="footer-btn" style="flex:1.2;" title="Generate handoff notes from active chat & send to another chat">⇄ Handoff</button>
+        <button id="send-notes" class="send-btn" style="flex:1.1;padding:6px;">Send</button>
       </div>
     </div>
 
@@ -2818,6 +3104,10 @@ class AgentCockpitProvider {
       vscode.postMessage({ type: "sendHandoff", content: handoffText.value });
     });
 
+    document.getElementById("handoff-chat-btn").addEventListener("click", () => {
+      vscode.postMessage({ type: "handoffSession" });
+    });
+
     function startInlineRename(row, session) {
       const titleEl = row.querySelector(".s-title");
       if (!titleEl) return;
@@ -2951,6 +3241,7 @@ class AgentCockpitProvider {
               '<span class="state-tag ' + tagInfo.cls + '">' + tagInfo.text + '</span>' +
               shortcutBadge +
               '<div class="row-actions">' +
+                '<button class="icon-action act-handoff" title="1-Click Handoff: Generate notes from this chat & send to another session">⇄</button>' +
                 '<button class="icon-action act-pin" title="' + (s.pinned ? "Unpin session" : "Pin/Bookmark session") + '">📌</button>' +
                 '<button class="icon-action act-palette" title="Color code session">🎨</button>' +
                 '<button class="icon-action act-rename" title="Rename">✎</button>' +
@@ -2994,6 +3285,10 @@ class AgentCockpitProvider {
             });
           });
 
+          card.querySelector(".act-handoff").addEventListener("click", (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ type: "handoffSession", id: s.id });
+          });
           card.querySelector(".act-pin").addEventListener("click", (e) => {
             e.stopPropagation();
             vscode.postMessage({ type: "togglePinSession", id: s.id });
