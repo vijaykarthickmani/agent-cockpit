@@ -90,6 +90,7 @@ interface DiscoveredCliSession {
 }
 
 const STORAGE_KEY = "agentCockpit.retainedSessions.v3";
+const DISMISSED_KEY = "agentCockpit.dismissedCliIds.v1";
 
 function isTerminalAlive(term?: vscode.Terminal): term is vscode.Terminal {
   if (!term) return false;
@@ -538,6 +539,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
   private _view?: vscode.WebviewView;
   private _sessions: CockpitSession[] = [];
+  private _dismissedCliIds: Set<string>;
   private _activeSessionId: string | null = null;
   private _currentCwd: string;
   private _defaultLocation: "editor" | "panel" = "editor";
@@ -548,14 +550,26 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this._currentCwd = wsFolder || "D:\\Thulir Inc";
 
+    const savedDismissed =
+      this._context.globalState.get<string[]>(DISMISSED_KEY) || [];
+    this._dismissedCliIds = new Set<string>(savedDismissed);
+
     const saved =
       this._context.globalState.get<StoredSessionMeta[]>(STORAGE_KEY) || [];
-    this._sessions = saved.map((meta) => ({
-      ...meta,
-      status: "stopped",
-      lastActivityAt: meta.createdAt,
-      terminal: undefined,
-    }));
+    // Filter out any previously auto-imported historical sessions or dismissed sessions
+    this._sessions = saved
+      .filter(
+        (meta) =>
+          !meta.id.startsWith("sess-agy-") &&
+          !meta.id.startsWith("sess-cli-") &&
+          (!meta.cliSessionId || !this._dismissedCliIds.has(meta.cliSessionId))
+      )
+      .map((meta) => ({
+        ...meta,
+        status: "stopped",
+        lastActivityAt: meta.createdAt,
+        terminal: undefined,
+      }));
 
     this._syncCliStoredSessionNames();
 
@@ -677,16 +691,20 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
     const agyDiscovered = discoverAgySessions(this._currentCwd);
     for (const disc of agyDiscovered) {
+      if (this._dismissedCliIds.has(disc.cliSessionId)) continue;
+
       let match = this._sessions.find(
         (s) => s.cliSessionId === disc.cliSessionId
       );
 
       if (!match) {
+        // Bind to an unbound AGY session launched in Agent Cockpit after or near this conversation's timestamp
         match = this._sessions.find(
           (s) =>
             s.command.toLowerCase().startsWith("agy") &&
             !s.cliSessionId &&
-            Math.abs(disc.mtimeMs - s.createdAt) < 10 * 60 * 1000
+            !this._sessions.some((other) => other.cliSessionId === disc.cliSessionId) &&
+            disc.mtimeMs >= s.createdAt - 15000
         );
         if (match) {
           match.cliSessionId = disc.cliSessionId;
@@ -714,27 +732,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
               .then(undefined, () => {});
           }
         }
-      } else {
-        const imported: CockpitSession = {
-          id: `sess-agy-${disc.cliSessionId.slice(0, 8)}`,
-          cliSessionId: disc.cliSessionId,
-          cliSessionName: disc.title,
-          title: disc.title,
-          badge: "✦",
-          color: "#3b82f6",
-          command: "agy",
-          args: [],
-          cwd: disc.cwd,
-          hasCustomTitle: true,
-          userRenamed: false,
-          location: this._defaultLocation,
-          status: "stopped",
-          lastActivityAt: disc.mtimeMs,
-          terminal: undefined,
-          createdAt: disc.mtimeMs,
-        };
-        this._sessions.push(imported);
-        changed = true;
       }
     }
 
@@ -746,6 +743,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     for (const cwd of cwdsToScan) {
       const discovered = discoverClaudeSessionsForCwd(cwd);
       for (const disc of discovered) {
+        if (this._dismissedCliIds.has(disc.cliSessionId)) continue;
+
         let match = this._sessions.find(
           (s) => s.cliSessionId === disc.cliSessionId
         );
@@ -755,7 +754,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             (s) =>
               s.command.toLowerCase().startsWith("claude") &&
               s.cwd.toLowerCase() === cwd.toLowerCase() &&
-              !discovered.some((d) => d.cliSessionId === s.cliSessionId)
+              !discovered.some((d) => d.cliSessionId === s.cliSessionId) &&
+              disc.mtimeMs >= s.createdAt - 15000
           );
           if (match) {
             match.cliSessionId = disc.cliSessionId;
@@ -783,27 +783,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
                 .then(undefined, () => {});
             }
           }
-        } else {
-          const imported: CockpitSession = {
-            id: `sess-cli-${disc.cliSessionId.slice(0, 8)}`,
-            cliSessionId: disc.cliSessionId,
-            cliSessionName: disc.title,
-            title: disc.title,
-            badge: "C",
-            color: "#e07a5f",
-            command: "claude",
-            args: [],
-            cwd: disc.cwd,
-            hasCustomTitle: true,
-            userRenamed: false,
-            location: this._defaultLocation,
-            status: "stopped",
-            lastActivityAt: disc.mtimeMs,
-            terminal: undefined,
-            createdAt: disc.mtimeMs,
-          };
-          this._sessions.push(imported);
-          changed = true;
         }
       }
     }
@@ -1225,6 +1204,13 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const idx = this._sessions.findIndex((s) => s.id === id);
     if (idx === -1) return;
     const target = this._sessions[idx];
+    if (target.cliSessionId) {
+      this._dismissedCliIds.add(target.cliSessionId);
+      void this._context.globalState.update(
+        DISMISSED_KEY,
+        Array.from(this._dismissedCliIds)
+      );
+    }
     if (isTerminalAlive(target.terminal)) {
       try {
         target.terminal.dispose();
