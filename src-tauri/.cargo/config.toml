@@ -1,0 +1,3 @@
+[build]
+# Use a space-free target directory so GNU windres.exe preprocesses Windows RC files cleanly
+target-dir = "C:/Users/vijay/AppData/Local/Temp/agent-cockpit-target"

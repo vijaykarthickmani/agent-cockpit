@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capabilities for Agent Cockpit","local":true,"windows":["main"],"permissions":["core:default","pty:default","dialog:default"]}}
