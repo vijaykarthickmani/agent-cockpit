@@ -27,7 +27,7 @@ export const DEFAULT_PRESETS: CliPreset[] = [
     label: "PowerShell",
     badge: "PS",
     command: "powershell.exe",
-    args: ["-NoLogo"],
+    args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
     description: "Interactive Windows PowerShell session",
   },
   {

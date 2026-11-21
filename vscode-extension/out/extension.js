@@ -66,7 +66,7 @@ const DEFAULT_PRESETS = [
         label: "PowerShell",
         badge: "PS",
         command: "powershell.exe",
-        args: ["-NoLogo"],
+        args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
     },
 ];
 function execGit(cwd, args) {
@@ -84,16 +84,19 @@ function findExecutableOnWindows(cmd) {
     const trimmed = cmd.trim();
     if (trimmed.toLowerCase() === "powershell.exe" ||
         trimmed.toLowerCase() === "powershell") {
-        return { shellPath: "powershell.exe", shellArgs: ["-NoLogo"] };
+        return {
+            shellPath: "powershell.exe",
+            shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        };
     }
     if (trimmed.toLowerCase() === "cmd.exe" || trimmed.toLowerCase() === "cmd") {
         return { shellPath: "cmd.exe", shellArgs: [] };
     }
-    // Launch interactive CLI agents inside PowerShell so PATH, .cmd wrappers (gemini.cmd, codex.cmd),
-    // and post-exit shell inspection work seamlessly on Windows.
+    // Launch interactive CLI agents inside PowerShell with -ExecutionPolicy Bypass so .ps1/.cmd
+    // wrappers (gemini.ps1, codex.ps1, npm.ps1) run cleanly without PSSecurityException.
     return {
         shellPath: "powershell.exe",
-        shellArgs: ["-NoLogo"],
+        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
         initialCommand: trimmed,
     };
 }
