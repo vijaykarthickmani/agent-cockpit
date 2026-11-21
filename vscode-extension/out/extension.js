@@ -973,7 +973,10 @@ class AgentCockpitProvider {
                         disc.mtimeMs >= s.createdAt - 15000);
                     if (match) {
                         match.cliSessionId = disc.cliSessionId;
-                        match.lastAssistantTurnId = disc.lastAssistantTurnId;
+                        match.lastUserTurnId = disc.lastUserTurnId;
+                        if (disc.isTurnComplete) {
+                            match.lastNotifiedUserTurnId = disc.lastUserTurnId;
+                        }
                         changed = true;
                     }
                 }

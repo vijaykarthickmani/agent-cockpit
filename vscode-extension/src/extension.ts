@@ -1170,7 +1170,10 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           );
           if (match) {
             match.cliSessionId = disc.cliSessionId;
-            match.lastAssistantTurnId = disc.lastAssistantTurnId;
+            match.lastUserTurnId = disc.lastUserTurnId;
+            if (disc.isTurnComplete) {
+              match.lastNotifiedUserTurnId = disc.lastUserTurnId;
+            }
             changed = true;
           }
         }
