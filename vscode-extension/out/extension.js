@@ -2885,15 +2885,6 @@ class AgentCockpitProvider {
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
 
-    <div class="prompt-box">
-      <input
-        id="quick-prompt-input"
-        type="text"
-        placeholder="Kick off prompt (focuses terminal on Enter)…"
-      />
-      <button id="quick-prompt-btn" class="send-btn" title="Send prompt & focus terminal">↵</button>
-    </div>
-
     <div class="footer-tabs">
       <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
       <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
@@ -2954,8 +2945,6 @@ class AgentCockpitProvider {
     const customCmd = document.getElementById("custom-cmd");
     const customGo = document.getElementById("custom-go");
     const sessionList = document.getElementById("session-list");
-    const quickPromptInput = document.getElementById("quick-prompt-input");
-    const quickPromptBtn = document.getElementById("quick-prompt-btn");
 
     const mcpDrawer = document.getElementById("mcp-drawer");
     const skillsDrawer = document.getElementById("skills-drawer");
@@ -3068,25 +3057,6 @@ class AgentCockpitProvider {
       if (e.key === "Enter") launchCustom();
     });
     customGo.addEventListener("click", launchCustom);
-
-    function submitQuickPrompt() {
-      const val = quickPromptInput.value.trim();
-      if (!val) return;
-      quickPromptInput.value = "";
-      quickPromptInput.blur();
-      vscode.postMessage({
-        type: "sendQuickPrompt",
-        prompt: val,
-      });
-    }
-
-    quickPromptInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        submitQuickPrompt();
-      }
-    });
-    quickPromptBtn.addEventListener("click", submitQuickPrompt);
 
     function startInlineRename(row, session) {
       const titleEl = row.querySelector(".s-title");
