@@ -2761,7 +2761,7 @@ class AgentCockpitProvider {
     }
     .footer-tabs {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(2, 1fr);
       gap: 4px;
     }
     .footer-btn {
@@ -2884,14 +2884,6 @@ class AgentCockpitProvider {
   <div class="footer-bar">
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
-    <div id="notes-drawer" class="drawer-pane">
-      <textarea id="handoff-text" rows="3" placeholder="Shared handoff notes (.agent/handoff.md)…"></textarea>
-      <div style="display:flex;gap:5px;">
-        <button id="save-notes" class="footer-btn" style="flex:1;">Save</button>
-        <button id="handoff-chat-btn" class="footer-btn" style="flex:1.2;" title="Generate handoff notes from active chat & send to another chat">⇄ Handoff</button>
-        <button id="send-notes" class="send-btn" style="flex:1.1;padding:6px;">Send</button>
-      </div>
-    </div>
 
     <div class="prompt-box">
       <input
@@ -2905,7 +2897,6 @@ class AgentCockpitProvider {
     <div class="footer-tabs">
       <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
       <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
-      <button id="tab-notes" class="footer-btn" title="Shared handoff notes">Notes</button>
     </div>
   </div>
 
@@ -2968,15 +2959,12 @@ class AgentCockpitProvider {
 
     const mcpDrawer = document.getElementById("mcp-drawer");
     const skillsDrawer = document.getElementById("skills-drawer");
-    const notesDrawer = document.getElementById("notes-drawer");
 
     const mcpCount = document.getElementById("mcp-count");
     const skillsCount = document.getElementById("skills-count");
-    const handoffText = document.getElementById("handoff-text");
 
     const tabMcp = document.getElementById("tab-mcp");
     const tabSkills = document.getElementById("tab-skills");
-    const tabNotes = document.getElementById("tab-notes");
 
     const COLOR_PALETTE = [
       "#3b82f6",
@@ -2991,11 +2979,9 @@ class AgentCockpitProvider {
       state.activeFooter = state.activeFooter === which ? null : which;
       mcpDrawer.classList.toggle("open", state.activeFooter === "mcp");
       skillsDrawer.classList.toggle("open", state.activeFooter === "skills");
-      notesDrawer.classList.toggle("open", state.activeFooter === "notes");
 
       tabMcp.classList.toggle("active", state.activeFooter === "mcp");
       tabSkills.classList.toggle("active", state.activeFooter === "skills");
-      tabNotes.classList.toggle("active", state.activeFooter === "notes");
 
       if (state.activeFooter === "mcp") {
         vscode.postMessage({ type: "refreshGit" });
@@ -3004,7 +2990,6 @@ class AgentCockpitProvider {
 
     tabMcp.addEventListener("click", () => setFooterDrawer("mcp"));
     tabSkills.addEventListener("click", () => setFooterDrawer("skills"));
-    tabNotes.addEventListener("click", () => setFooterDrawer("notes"));
 
     cwdPill.addEventListener("click", () => {
       vscode.postMessage({ type: "browseCwd" });
@@ -3102,18 +3087,6 @@ class AgentCockpitProvider {
       }
     });
     quickPromptBtn.addEventListener("click", submitQuickPrompt);
-
-    document.getElementById("save-notes").addEventListener("click", () => {
-      vscode.postMessage({ type: "saveHandoff", content: handoffText.value });
-    });
-
-    document.getElementById("send-notes").addEventListener("click", () => {
-      vscode.postMessage({ type: "sendHandoff", content: handoffText.value });
-    });
-
-    document.getElementById("handoff-chat-btn").addEventListener("click", () => {
-      vscode.postMessage({ type: "handoffSession" });
-    });
 
     function startInlineRename(row, session) {
       const titleEl = row.querySelector(".s-title");
@@ -3393,10 +3366,6 @@ class AgentCockpitProvider {
           });
           skillsDrawer.appendChild(r);
         });
-      }
-
-      if (document.activeElement !== handoffText) {
-        handoffText.value = msg.handoffContent || "";
       }
     });
 
