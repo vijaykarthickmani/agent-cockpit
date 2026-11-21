@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { spawn, IPty } from "tauri-pty";
@@ -8,7 +9,17 @@ import { RuntimeStatus, TerminalSession } from "../types/session";
 interface TerminalPaneProps {
   session: TerminalSession;
   isActive: boolean;
-  onStatusChange: (id: string, status: RuntimeStatus, exitCode?: number | null) => void;
+  onStatusChange: (
+    id: string,
+    status: RuntimeStatus,
+    exitCode?: number | null
+  ) => void;
+}
+
+interface ResolvedCommand {
+  program: string;
+  args: string[];
+  resolvedPath: string;
 }
 
 const NEEDS_INPUT_PATTERNS = [
@@ -56,6 +67,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
     const container = containerRef.current;
     if (!container) return;
 
+    let cancelled = false;
     setSpawnError(null);
 
     const term = new Terminal({
@@ -111,61 +123,88 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
     let exitListener: { dispose: () => void } | null = null;
     let termInputDisposable: { dispose: () => void } | null = null;
 
-    try {
-      pty = spawn(session.command, session.args, {
-        cols: initialCols,
-        rows: initialRows,
-        cwd: session.cwd || undefined,
-      });
-      ptyRef.current = pty;
-      onStatusChange(session.id, "idle", null);
-
-      const decodeChunk = (raw: Uint8Array | number[] | string): string => {
-        if (typeof raw === "string") return raw;
-        const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-        return new TextDecoder().decode(bytes);
-      };
-
-      dataListener = pty.onData((data) => {
-        const text = decodeChunk(data as Uint8Array | number[] | string);
-        term.write(data);
-
-        onStatusChange(session.id, "working");
-        if (idleTimerRef.current) {
-          window.clearTimeout(idleTimerRef.current);
-        }
-
-        const tail = text.slice(-300);
-        const matchesPrompt = NEEDS_INPUT_PATTERNS.some((re) => re.test(tail));
-
-        idleTimerRef.current = window.setTimeout(() => {
-          onStatusChange(session.id, matchesPrompt ? "needs-input" : "idle");
-        }, 900);
-      });
-
-      exitListener = pty.onExit(({ exitCode }) => {
-        if (idleTimerRef.current) {
-          window.clearTimeout(idleTimerRef.current);
-        }
-        term.writeln(
-          `\r\n\x1b[33m[Process exited with code ${exitCode ?? 0}]\x1b[0m`
-        );
-        onStatusChange(session.id, "exited", exitCode ?? 0);
-      });
-
-      termInputDisposable = term.onData((input) => {
-        try {
-          pty?.write(input);
-        } catch (err) {
-          console.error("Failed writing to PTY:", err);
-        }
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+    const handleLaunchFailure = (msg: string) => {
+      if (cancelled) return;
       setSpawnError(msg);
-      term.writeln(`\x1b[31m[Failed to launch "${session.command}": ${msg}]\x1b[0m`);
+      term.writeln(
+        `\x1b[1;31m[Failed to launch "${session.command}"]\x1b[0m\r\n\x1b[33m${msg}\x1b[0m\r\n`
+      );
       onStatusChange(session.id, "exited", -1);
-    }
+    };
+
+    invoke<ResolvedCommand>("resolve_cli_command", {
+      command: session.command,
+      args: session.args,
+    })
+      .then((resolved) => {
+        if (cancelled) return;
+
+        pty = spawn(resolved.program, resolved.args, {
+          cols: initialCols,
+          rows: initialRows,
+          cwd: session.cwd || undefined,
+        });
+        ptyRef.current = pty;
+        onStatusChange(session.id, "idle", null);
+
+        // Catch asynchronous rejections from tauri-pty's internal _init promise
+        const internalInit = (
+          pty as unknown as { _init?: Promise<unknown> }
+        )._init;
+        if (internalInit && typeof internalInit.catch === "function") {
+          internalInit.catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            handleLaunchFailure(msg);
+          });
+        }
+
+        const decodeChunk = (raw: Uint8Array | number[] | string): string => {
+          if (typeof raw === "string") return raw;
+          const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+          return new TextDecoder().decode(bytes);
+        };
+
+        dataListener = pty.onData((data) => {
+          const text = decodeChunk(data as Uint8Array | number[] | string);
+          term.write(data);
+
+          onStatusChange(session.id, "working");
+          if (idleTimerRef.current) {
+            window.clearTimeout(idleTimerRef.current);
+          }
+
+          const tail = text.slice(-300);
+          const matchesPrompt = NEEDS_INPUT_PATTERNS.some((re) =>
+            re.test(tail)
+          );
+
+          idleTimerRef.current = window.setTimeout(() => {
+            onStatusChange(session.id, matchesPrompt ? "needs-input" : "idle");
+          }, 900);
+        });
+
+        exitListener = pty.onExit(({ exitCode }) => {
+          if (idleTimerRef.current) {
+            window.clearTimeout(idleTimerRef.current);
+          }
+          term.writeln(
+            `\r\n\x1b[33m[Process exited with code ${exitCode ?? 0}]\x1b[0m`
+          );
+          onStatusChange(session.id, "exited", exitCode ?? 0);
+        });
+
+        termInputDisposable = term.onData((input) => {
+          try {
+            pty?.write(input);
+          } catch (err) {
+            console.error("Failed writing to PTY:", err);
+          }
+        });
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        handleLaunchFailure(msg);
+      });
 
     const resizeObserver = new ResizeObserver(() => {
       fitAndResizePty();
@@ -173,6 +212,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
     resizeObserver.observe(container);
 
     return () => {
+      cancelled = true;
       if (idleTimerRef.current) {
         window.clearTimeout(idleTimerRef.current);
       }
@@ -234,10 +274,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
 
       {spawnError && (
         <div className="terminal-error-banner">
-          <span>
-            Could not spawn <code>{session.command}</code> in{" "}
-            <code>{session.cwd}</code>: {spawnError}
-          </span>
+          <span>{spawnError}</span>
           <button
             type="button"
             className="btn-secondary btn-xs"
