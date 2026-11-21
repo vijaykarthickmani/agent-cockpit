@@ -23,12 +23,12 @@ export interface CliPreset {
 
 export const DEFAULT_PRESETS: CliPreset[] = [
   {
-    id: "powershell",
-    label: "PowerShell",
-    badge: "PS",
-    command: "powershell.exe",
-    args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-    description: "Interactive Windows PowerShell session",
+    id: "agy",
+    label: "Antigravity (agy)",
+    badge: "AGY",
+    command: "agy",
+    args: [],
+    description: "Google Antigravity interactive CLI coding agent (agy)",
   },
   {
     id: "claude",
@@ -47,12 +47,12 @@ export const DEFAULT_PRESETS: CliPreset[] = [
     description: "OpenAI Codex interactive CLI coding agent",
   },
   {
-    id: "gemini",
-    label: "Gemini CLI",
-    badge: "GM",
-    command: "gemini",
-    args: [],
-    description: "Google Gemini interactive CLI coding agent",
+    id: "powershell",
+    label: "PowerShell",
+    badge: "PS",
+    command: "powershell.exe",
+    args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+    description: "Interactive Windows PowerShell session",
   },
   {
     id: "cmd",

@@ -22,6 +22,12 @@ fn candidate_search_dirs() -> Vec<PathBuf> {
     if let Ok(appdata) = std::env::var("APPDATA") {
         dirs.push(PathBuf::from(appdata).join("npm"));
     }
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        let base = PathBuf::from(local_appdata).join("Programs");
+        dirs.push(base.join("antigravity").join("bin"));
+        dirs.push(base.join("antigravity"));
+        dirs.push(base.join("Antigravity IDE").join("bin"));
+    }
     dirs
 }
 

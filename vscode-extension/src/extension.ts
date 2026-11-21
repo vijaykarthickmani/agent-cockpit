@@ -13,6 +13,13 @@ interface AgentPreset {
 
 const DEFAULT_PRESETS: AgentPreset[] = [
   {
+    id: "agy",
+    label: "Antigravity (agy)",
+    badge: "AGY",
+    command: "agy",
+    args: [],
+  },
+  {
     id: "claude",
     label: "Claude Code",
     badge: "CC",
@@ -24,13 +31,6 @@ const DEFAULT_PRESETS: AgentPreset[] = [
     label: "Codex CLI",
     badge: "CX",
     command: "codex",
-    args: [],
-  },
-  {
-    id: "gemini",
-    label: "Gemini CLI",
-    badge: "GM",
-    command: "gemini",
     args: [],
   },
   {
