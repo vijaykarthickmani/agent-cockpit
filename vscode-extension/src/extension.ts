@@ -47,7 +47,7 @@ const DEFAULT_PRESETS: AgentPreset[] = [
   },
 ];
 
-interface CockpitSession {
+interface StoredSessionMeta {
   id: string;
   title: string;
   badge: string;
@@ -59,14 +59,20 @@ interface CockpitSession {
   isWorktree?: boolean;
   hasCustomTitle: boolean;
   location: "editor" | "panel";
-  terminal: vscode.Terminal;
   createdAt: number;
+}
+
+interface CockpitSession extends StoredSessionMeta {
+  status: "running" | "stopped";
+  terminal?: vscode.Terminal;
 }
 
 interface GitFileChange {
   status: string;
   file: string;
 }
+
+const STORAGE_KEY = "agentCockpit.retainedSessions.v1";
 
 function summarizeFirstLine(raw: string, label: string): string | null {
   const firstLine = raw
@@ -142,17 +148,26 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this._currentCwd = wsFolder || "D:\\Thulir Inc";
 
+    // Restore retained sessions from persistent storage
+    const saved =
+      this._context.globalState.get<StoredSessionMeta[]>(STORAGE_KEY) || [];
+    this._sessions = saved.map((meta) => ({
+      ...meta,
+      status: "stopped",
+      terminal: undefined,
+    }));
+    if (this._sessions.length > 0) {
+      this._activeSessionId = this._sessions[this._sessions.length - 1].id;
+    }
+
+    // When a terminal tab is closed by the user, RETAIN the session in the list as "stopped"
+    // so they can click it anytime to relaunch/resume!
     vscode.window.onDidCloseTerminal((closedTerm) => {
-      const idx = this._sessions.findIndex((s) => s.terminal === closedTerm);
-      if (idx !== -1) {
-        const removed = this._sessions[idx];
-        this._sessions.splice(idx, 1);
-        if (this._activeSessionId === removed.id) {
-          this._activeSessionId =
-            this._sessions.length > 0
-              ? this._sessions[this._sessions.length - 1].id
-              : null;
-        }
+      const found = this._sessions.find((s) => s.terminal === closedTerm);
+      if (found) {
+        found.terminal = undefined;
+        found.status = "stopped";
+        this._persistSessions();
         this.refreshWebviewState();
       }
     });
@@ -189,6 +204,24 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         })
       );
     }
+  }
+
+  private _persistSessions() {
+    const serializable: StoredSessionMeta[] = this._sessions.map((s) => ({
+      id: s.id,
+      title: s.title,
+      badge: s.badge,
+      color: s.color,
+      command: s.command,
+      args: s.args,
+      cwd: s.cwd,
+      branch: s.branch,
+      isWorktree: s.isWorktree,
+      hasCustomTitle: s.hasCustomTitle,
+      location: s.location,
+      createdAt: s.createdAt,
+    }));
+    void this._context.globalState.update(STORAGE_KEY, serializable);
   }
 
   public resolveWebviewView(
@@ -228,7 +261,10 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           });
           break;
         case "focusSession":
-          this.focusSessionById(msg.id);
+          await this.focusOrRelaunchSessionById(msg.id);
+          break;
+        case "relaunchSession":
+          await this.relaunchSessionById(msg.id);
           break;
         case "renameSession":
           if (typeof msg.id === "string" && typeof msg.title === "string") {
@@ -237,17 +273,17 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           break;
         case "sendQuickPrompt":
           if (typeof msg.prompt === "string" && msg.prompt.trim()) {
-            this.sendQuickPromptToActiveAgent(msg.prompt.trim());
+            await this.sendQuickPromptToActiveAgent(msg.prompt.trim());
           }
           break;
-        case "closeSession":
-          await this.closeSessionById(msg.id);
+        case "deleteSession":
+          await this.deleteSessionById(msg.id);
           break;
         case "sendSelection":
-          this.sendActiveEditorSelectionToAgent(msg.id);
+          await this.sendActiveEditorSelectionToAgent(msg.id);
           break;
         case "mentionFile":
-          this.sendTextToActiveAgent(`@${msg.file} `, false);
+          await this.sendTextToActiveAgent(`@${msg.file} `, false);
           break;
         case "openFileDiff":
           await this._openGitDiffForFile(msg.file);
@@ -257,7 +293,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           break;
         case "sendHandoff":
           this._saveHandoffContent(msg.content || "");
-          this.sendTextToActiveAgent(
+          await this.sendTextToActiveAgent(
             "Read .agent/handoff.md and continue.",
             false
           );
@@ -281,6 +317,43 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       this._currentCwd = picked[0].fsPath;
       await this.refreshWebviewState();
     }
+  }
+
+  private _createVsTerminalForSession(
+    title: string,
+    command: string,
+    args: string[],
+    cwd: string,
+    location: "editor" | "panel"
+  ): vscode.Terminal {
+    const folderShort = path.basename(cwd) || cwd;
+    const termName = `${title} · ${folderShort}`;
+    const resolved = findExecutableOnWindows(command);
+
+    const terminalLocation =
+      location === "editor"
+        ? vscode.TerminalLocation.Editor
+        : vscode.TerminalLocation.Panel;
+
+    const terminal = vscode.window.createTerminal({
+      name: termName,
+      cwd,
+      shellPath: resolved.shellPath,
+      shellArgs: resolved.shellArgs,
+      location: terminalLocation,
+    });
+
+    terminal.show(false);
+
+    if (resolved.initialCommand) {
+      const fullCmd =
+        args.length > 0
+          ? `${resolved.initialCommand} ${args.join(" ")}`
+          : resolved.initialCommand;
+      terminal.sendText(fullCmd, true);
+    }
+
+    return terminal;
   }
 
   public async spawnSession(params: {
@@ -340,32 +413,13 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       branch = undefined;
     }
 
-    const folderShort = path.basename(targetCwd) || targetCwd;
-    const termName = `${params.title} · ${folderShort}`;
-    const resolved = findExecutableOnWindows(params.command);
-
-    const terminalLocation =
-      params.location === "editor"
-        ? vscode.TerminalLocation.Editor
-        : vscode.TerminalLocation.Panel;
-
-    const terminal = vscode.window.createTerminal({
-      name: termName,
-      cwd: targetCwd,
-      shellPath: resolved.shellPath,
-      shellArgs: resolved.shellArgs,
-      location: terminalLocation,
-    });
-
-    terminal.show(false);
-
-    if (resolved.initialCommand) {
-      const fullCmd =
-        params.args.length > 0
-          ? `${resolved.initialCommand} ${params.args.join(" ")}`
-          : resolved.initialCommand;
-      terminal.sendText(fullCmd, true);
-    }
+    const terminal = this._createVsTerminalForSession(
+      params.title,
+      params.command,
+      params.args,
+      targetCwd,
+      params.location
+    );
 
     const id = `sess-${Date.now().toString(36)}-${Math.random()
       .toString(36)
@@ -383,6 +437,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       isWorktree,
       hasCustomTitle: false,
       location: params.location,
+      status: "running",
       terminal,
       createdAt: Date.now(),
     };
@@ -390,6 +445,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     this._sessions.push(session);
     this._activeSessionId = id;
     this._currentCwd = targetCwd;
+    this._persistSessions();
     await this.refreshWebviewState();
   }
 
@@ -401,15 +457,18 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
     found.title = trimmed;
     found.hasCustomTitle = true;
+    this._persistSessions();
 
-    try {
-      found.terminal.show(true);
-      await vscode.commands.executeCommand(
-        "workbench.action.terminal.renameWithArg",
-        { name: trimmed }
-      );
-    } catch {
-      // ignore
+    if (found.terminal && found.status === "running") {
+      try {
+        found.terminal.show(true);
+        await vscode.commands.executeCommand(
+          "workbench.action.terminal.renameWithArg",
+          { name: trimmed }
+        );
+      } catch {
+        // ignore
+      }
     }
 
     await this.refreshWebviewState();
@@ -431,7 +490,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  public sendQuickPromptToActiveAgent(promptText: string) {
+  public async sendQuickPromptToActiveAgent(promptText: string) {
     const active =
       this._sessions.find((s) => s.id === this._activeSessionId) ??
       this._sessions[this._sessions.length - 1];
@@ -439,31 +498,72 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     if (active && !active.hasCustomTitle) {
       const autoTitle = summarizeFirstLine(promptText, active.title);
       if (autoTitle) {
-        void this.renameSession(active.id, autoTitle);
+        await this.renameSession(active.id, autoTitle);
       }
     }
 
-    this.sendTextToActiveAgent(promptText, true);
+    await this.sendTextToActiveAgent(promptText, true);
   }
 
   public focusSessionByIndex(indexZeroBased: number) {
     if (indexZeroBased < 0 || indexZeroBased >= this._sessions.length) return;
-    this.focusSessionById(this._sessions[indexZeroBased].id);
+    void this.focusOrRelaunchSessionById(this._sessions[indexZeroBased].id);
   }
 
-  public focusSessionById(id: string) {
+  public async focusOrRelaunchSessionById(id: string) {
     const found = this._sessions.find((s) => s.id === id);
     if (!found) return;
     this._activeSessionId = found.id;
     this._currentCwd = found.cwd;
-    found.terminal.show(false);
-    this.refreshWebviewState();
+
+    if (found.terminal && found.status === "running") {
+      found.terminal.show(false);
+    } else {
+      // Session was retained after its terminal tab closed — relaunch it automatically!
+      await this.relaunchSessionById(id);
+      return;
+    }
+    await this.refreshWebviewState();
   }
 
-  public async closeSessionById(id: string) {
+  public async relaunchSessionById(id: string) {
+    const found = this._sessions.find((s) => s.id === id);
+    if (!found) return;
+
+    if (found.terminal) {
+      try {
+        found.terminal.dispose();
+      } catch {
+        // ignore
+      }
+    }
+
+    const cwd = fs.existsSync(found.cwd) ? found.cwd : this._currentCwd;
+    found.terminal = this._createVsTerminalForSession(
+      found.title,
+      found.command,
+      found.args,
+      cwd,
+      found.location || this._defaultLocation
+    );
+    found.status = "running";
+    this._activeSessionId = found.id;
+    this._currentCwd = cwd;
+    this._persistSessions();
+    await this.refreshWebviewState();
+  }
+
+  public async deleteSessionById(id: string) {
     const idx = this._sessions.findIndex((s) => s.id === id);
     if (idx === -1) return;
-    this._sessions[idx].terminal.dispose();
+    const target = this._sessions[idx];
+    if (target.terminal) {
+      try {
+        target.terminal.dispose();
+      } catch {
+        // ignore
+      }
+    }
     this._sessions.splice(idx, 1);
     if (this._activeSessionId === id) {
       this._activeSessionId =
@@ -471,10 +571,11 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           ? this._sessions[this._sessions.length - 1].id
           : null;
     }
+    this._persistSessions();
     await this.refreshWebviewState();
   }
 
-  public sendTextToActiveAgent(text: string, addNewLine = false) {
+  public async sendTextToActiveAgent(text: string, addNewLine = false) {
     const active =
       this._sessions.find((s) => s.id === this._activeSessionId) ??
       this._sessions[this._sessions.length - 1];
@@ -490,18 +591,22 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (!active.terminal || active.status === "stopped") {
+      await this.relaunchSessionById(active.id);
+    }
+
     if (!active.hasCustomTitle) {
       const autoTitle = summarizeFirstLine(text, active.title);
       if (autoTitle) {
-        void this.renameSession(active.id, autoTitle);
+        await this.renameSession(active.id, autoTitle);
       }
     }
 
-    active.terminal.show(false);
-    active.terminal.sendText(text, addNewLine);
+    active.terminal?.show(false);
+    active.terminal?.sendText(text, addNewLine);
   }
 
-  public sendActiveEditorSelectionToAgent(targetSessionId?: string) {
+  public async sendActiveEditorSelectionToAgent(targetSessionId?: string) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       vscode.window.showWarningMessage("Open a file in the editor first.");
@@ -531,7 +636,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         ? `@${relPath}:${startLine}-${endLine} `
         : `@${relPath}:${startLine} `;
 
-    this.sendTextToActiveAgent(refText, false);
+    await this.sendTextToActiveAgent(refText, false);
   }
 
   private async _openGitDiffForFile(relFile: string) {
@@ -630,6 +735,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         folderName: path.basename(s.cwd) || s.cwd,
         branch: s.branch,
         isWorktree: s.isWorktree,
+        status: s.status,
       })),
     });
   }
@@ -779,7 +885,19 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       font-weight: 700;
       color: #ffffff;
       flex-shrink: 0;
+      position: relative;
     }
+    .state-pip {
+      position: absolute;
+      bottom: -2px;
+      right: -2px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      border: 1.5px solid var(--md-surface);
+    }
+    .pip-running { background: #1e8e3e; }
+    .pip-stopped { background: #9aa0a6; }
 
     /* Custom Command Card */
     .custom-drawer {
@@ -841,6 +959,9 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       border-color: var(--md-primary);
       border-left: 4px solid var(--md-primary);
       background: var(--md-primary-bg);
+    }
+    .session-card.stopped {
+      opacity: 0.82;
     }
     .s-title {
       flex: 1;
@@ -1253,23 +1374,35 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         presetButtons.appendChild(btn);
       });
 
-      // Material Session Cards
+      // Material Session Cards (retained even when terminal tab is closed)
       sessionList.innerHTML = "";
       if (!msg.sessions || msg.sessions.length === 0) {
         sessionList.innerHTML = '<div class="empty-card">Click an agent button above to launch a session</div>';
       } else {
         msg.sessions.forEach((s) => {
+          const isStopped = s.status === "stopped";
           const card = document.createElement("div");
-          card.className = "session-card" + (s.id === msg.activeSessionId ? " active" : "");
-          card.title = "Click to focus · Double-click title to rename";
+          card.className =
+            "session-card" +
+            (s.id === msg.activeSessionId ? " active" : "") +
+            (isStopped ? " stopped" : "");
+          card.title = isStopped
+            ? "Terminal closed — Click to relaunch · Double-click title to rename"
+            : "Running — Click to focus · Double-click title to rename";
           card.innerHTML =
-            '<span class="agent-dot" style="background:' + (s.color || "#1a73e8") + ';">' + s.badge + '</span>' +
+            '<span class="agent-dot" style="background:' + (s.color || "#1a73e8") + ';">' +
+              s.badge +
+              '<span class="state-pip ' + (isStopped ? "pip-stopped" : "pip-running") + '"></span>' +
+            '</span>' +
             '<span class="s-title">' + s.title + '</span>' +
             '<span class="s-folder">' + s.folderName + '</span>' +
             '<div class="row-actions">' +
+              (isStopped
+                ? '<button class="icon-action act-relaunch" title="Relaunch terminal">↻</button>'
+                : "") +
               '<button class="icon-action act-rename" title="Rename">✎</button>' +
               '<button class="icon-action act-send" title="Send @file:line">@</button>' +
-              '<button class="icon-action danger act-close" title="Close">✕</button>' +
+              '<button class="icon-action danger act-delete" title="Remove session from list">✕</button>' +
             '</div>';
 
           card.addEventListener("click", () => {
@@ -1279,6 +1412,13 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             e.stopPropagation();
             startInlineRename(card, s);
           });
+          const relaunchBtn = card.querySelector(".act-relaunch");
+          if (relaunchBtn) {
+            relaunchBtn.addEventListener("click", (e) => {
+              e.stopPropagation();
+              vscode.postMessage({ type: "relaunchSession", id: s.id });
+            });
+          }
           card.querySelector(".act-rename").addEventListener("click", (e) => {
             e.stopPropagation();
             startInlineRename(card, s);
@@ -1287,9 +1427,9 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             e.stopPropagation();
             vscode.postMessage({ type: "sendSelection", id: s.id });
           });
-          card.querySelector(".act-close").addEventListener("click", (e) => {
+          card.querySelector(".act-delete").addEventListener("click", (e) => {
             e.stopPropagation();
-            vscode.postMessage({ type: "closeSession", id: s.id });
+            vscode.postMessage({ type: "deleteSession", id: s.id });
           });
           sessionList.appendChild(card);
         });
@@ -1405,13 +1545,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agentCockpit.sendSelection", () => {
-      provider.sendActiveEditorSelectionToAgent();
+      void provider.sendActiveEditorSelectionToAgent();
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agentCockpit.openHandoff", () => {
-      provider.openHandoffInEditor();
+      void provider.openHandoffInEditor();
     })
   );
 
