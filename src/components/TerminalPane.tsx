@@ -270,30 +270,6 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
       className={`terminal-pane-wrapper ${isActive ? "active" : "hidden"}`}
       aria-hidden={!isActive}
     >
-      <div className="terminal-Subheader">
-        <div className="terminal-meta">
-          <span className={`status-dot status-${session.status}`} />
-          <span className="terminal-cmd">
-            {session.command}{" "}
-            {session.args.length > 0 ? session.args.join(" ") : ""}
-          </span>
-          <span className="terminal-cwd" title={session.cwd}>
-            cwd: {session.cwd}
-          </span>
-        </div>
-        <div className="terminal-actions">
-          {session.status === "exited" && (
-            <button
-              type="button"
-              className="btn-secondary btn-xs"
-              onClick={() => setRestartCount((n) => n + 1)}
-            >
-              Restart Process
-            </button>
-          )}
-        </div>
-      </div>
-
       {spawnError && (
         <div className="terminal-error-banner">
           <span>{spawnError}</span>

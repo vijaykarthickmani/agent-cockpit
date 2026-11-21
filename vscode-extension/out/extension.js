@@ -46,7 +46,7 @@ const DEFAULT_PRESETS = [
         id: "agy",
         label: "AGY",
         badge: "✦",
-        color: "#1a73e8",
+        color: "#3b82f6",
         command: "agy",
         args: [],
     },
@@ -54,7 +54,7 @@ const DEFAULT_PRESETS = [
         id: "claude",
         label: "Claude",
         badge: "C",
-        color: "#d97757",
+        color: "#e07a5f",
         command: "claude",
         args: [],
     },
@@ -62,7 +62,7 @@ const DEFAULT_PRESETS = [
         id: "codex",
         label: "Codex",
         badge: "X",
-        color: "#10a37f",
+        color: "#10b981",
         command: "codex",
         args: [],
     },
@@ -70,7 +70,7 @@ const DEFAULT_PRESETS = [
         id: "powershell",
         label: "Shell",
         badge: ">_",
-        color: "#5f6368",
+        color: "#64748b",
         command: "powershell.exe",
         args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
     },
@@ -83,14 +83,20 @@ function isTerminalAlive(term) {
         return false;
     return vscode.window.terminals.includes(term);
 }
+/**
+ * Safely quote a file path or @file:line reference if it contains spaces
+ */
+function formatAtFileRef(relPath, lineRange) {
+    const normalized = relPath.replace(/\\/g, "/");
+    const suffix = lineRange ? `:${lineRange}` : "";
+    if (/\s/.test(normalized)) {
+        return `@"${normalized}${suffix}" `;
+    }
+    return `@${normalized}${suffix} `;
+}
 function claudeProjectSlug(cwd) {
     return cwd.replace(/[^a-zA-Z0-9]/g, "-");
 }
-/**
- * Discover Antigravity CLI (agy) stored conversations from:
- * - ~/.gemini/antigravity-cli/annotations/<conversation-id>.pbtxt (title:"...")
- * - ~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl
- */
 function discoverAgySessions(defaultCwd) {
     const results = [];
     const home = os.homedir();
@@ -122,9 +128,11 @@ function discoverAgySessions(defaultCwd) {
             // ignore
         }
     }
+    const now = Date.now();
     for (const convId of ids) {
         let title = null;
         let mtimeMs = 0;
+        let runtimeHint = "idle";
         const pbtxtPath = path.join(annotationsDir, `${convId}.pbtxt`);
         if (fs.existsSync(pbtxtPath)) {
             try {
@@ -145,18 +153,26 @@ function discoverAgySessions(defaultCwd) {
             try {
                 const stat = fs.statSync(transcriptPath);
                 mtimeMs = Math.max(mtimeMs, stat.mtimeMs);
-                if (!title) {
-                    const content = fs.readFileSync(transcriptPath, "utf8");
-                    const firstLine = content.split(/\r?\n/).find((l) => l.trim());
-                    if (firstLine) {
-                        const obj = JSON.parse(firstLine);
-                        if (typeof obj.content === "string") {
-                            const reqMatch = obj.content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
-                            const candidate = (reqMatch ? reqMatch[1] : obj.content).trim();
-                            if (candidate) {
-                                title = candidate.replace(/\s+/g, " ").slice(0, 32);
-                            }
+                const content = fs.readFileSync(transcriptPath, "utf8");
+                const lines = content.split(/\r?\n/).filter((l) => l.trim());
+                if (!title && lines.length > 0) {
+                    const obj = JSON.parse(lines[0]);
+                    if (typeof obj.content === "string") {
+                        const reqMatch = obj.content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
+                        const candidate = (reqMatch ? reqMatch[1] : obj.content).trim();
+                        if (candidate) {
+                            title = candidate.replace(/\s+/g, " ").slice(0, 32);
                         }
+                    }
+                }
+                if (lines.length > 0) {
+                    const lastObj = JSON.parse(lines[lines.length - 1]);
+                    if (now - stat.mtimeMs < 4500) {
+                        runtimeHint = "working";
+                    }
+                    else if (typeof lastObj.content === "string" &&
+                        /\?\s*$|\[y\/n\]|approve|allow/i.test(lastObj.content.slice(-200))) {
+                        runtimeHint = "needs-input";
                     }
                 }
             }
@@ -169,7 +185,8 @@ function discoverAgySessions(defaultCwd) {
                 cliSessionId: convId,
                 title,
                 cwd: defaultCwd,
-                mtimeMs: mtimeMs || Date.now(),
+                mtimeMs: mtimeMs || now,
+                runtimeHint,
                 agentType: "agy",
             });
         }
@@ -181,7 +198,11 @@ function parseClaudeJsonlMeta(filePath) {
     let customTitle = null;
     let firstUserPrompt = null;
     let detectedCwd = null;
+    let lastRole = null;
+    let lastText = "";
     try {
+        const stat = fs.statSync(filePath);
+        const isVeryRecent = Date.now() - stat.mtimeMs < 4500;
         const content = fs.readFileSync(filePath, "utf8");
         const lines = content.split(/\r?\n/);
         for (const line of lines) {
@@ -206,39 +227,65 @@ function parseClaudeJsonlMeta(filePath) {
                     obj.sessionName.trim()) {
                     customTitle = obj.sessionName.trim();
                 }
-                else if (!firstUserPrompt &&
-                    obj.type === "user" &&
-                    obj.message &&
-                    obj.message.role === "user") {
+                else if (obj.type === "user" && obj.message?.role === "user") {
+                    lastRole = "user";
                     const rawContent = obj.message.content;
-                    if (typeof rawContent === "string" && rawContent.trim()) {
-                        firstUserPrompt = rawContent.trim();
-                    }
-                    else if (Array.isArray(rawContent)) {
-                        const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
-                        if (textPart && textPart.text.trim()) {
-                            firstUserPrompt = textPart.text.trim();
+                    if (!firstUserPrompt) {
+                        if (typeof rawContent === "string" && rawContent.trim()) {
+                            firstUserPrompt = rawContent.trim();
                         }
+                        else if (Array.isArray(rawContent)) {
+                            const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
+                            if (textPart && textPart.text.trim()) {
+                                firstUserPrompt = textPart.text.trim();
+                            }
+                        }
+                    }
+                }
+                else if (obj.type === "assistant" &&
+                    obj.message?.role === "assistant") {
+                    lastRole = "assistant";
+                    const rawContent = obj.message.content;
+                    if (Array.isArray(rawContent)) {
+                        const toolUse = rawContent.find((p) => p && p.type === "tool_use");
+                        const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
+                        lastText = toolUse
+                            ? "[tool_use]"
+                            : textPart?.text || "";
                     }
                 }
             }
             catch {
-                // skip malformed line
+                // skip
             }
         }
+        let runtimeHint = "idle";
+        if (isVeryRecent || lastRole === "user") {
+            runtimeHint = "working";
+        }
+        else if (lastText === "[tool_use]" ||
+            /\?\s*$|\[y\/n\]|approve|allow/i.test(lastText.slice(-180))) {
+            runtimeHint = "needs-input";
+        }
+        const chosen = customTitle || firstUserPrompt;
+        const cleaned = chosen
+            ? chosen.replace(/\s+/g, " ").trim().slice(0, 32)
+            : null;
+        return {
+            sessionId,
+            title: cleaned,
+            cwd: detectedCwd,
+            runtimeHint,
+        };
     }
     catch {
-        // ignore
+        return {
+            sessionId,
+            title: null,
+            cwd: null,
+            runtimeHint: "idle",
+        };
     }
-    const chosen = customTitle || firstUserPrompt;
-    const cleaned = chosen
-        ? chosen.replace(/\s+/g, " ").trim().slice(0, 32)
-        : null;
-    return {
-        sessionId,
-        title: cleaned,
-        cwd: detectedCwd,
-    };
 }
 function discoverClaudeSessionsForCwd(cwd) {
     const results = [];
@@ -276,6 +323,7 @@ function discoverClaudeSessionsForCwd(cwd) {
                         title: meta.title,
                         cwd: meta.cwd || cwd,
                         mtimeMs: stat.mtimeMs,
+                        runtimeHint: meta.runtimeHint,
                         agentType: "claude",
                     });
                 }
@@ -339,14 +387,13 @@ function buildShellLaunch(session, isResume) {
     if (lower === "cmd.exe" || lower === "cmd") {
         return { shellPath: "cmd.exe", shellArgs: [] };
     }
-    // 1. Antigravity CLI (agy.exe): uses --conversation <id> or --continue (-c)
     if (lower === "agy" || lower === "agy.cmd" || lower === "agy.exe") {
         if (isResume) {
             if (sessionId) {
                 return {
                     shellPath: "powershell.exe",
                     shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-                    initialCommand: `agy --conversation ${sessionId}${extraArgs}; if ($LASTEXITCODE -ne 0) { agy --continue${extraArgs} }; if ($LASTEXITCODE -ne 0) { agy${extraArgs} }`,
+                    initialCommand: `agy --conversation "${sessionId}"${extraArgs}; if ($LASTEXITCODE -ne 0) { agy --continue${extraArgs} }; if ($LASTEXITCODE -ne 0) { agy${extraArgs} }`,
                 };
             }
             return {
@@ -361,7 +408,6 @@ function buildShellLaunch(session, isResume) {
             initialCommand: `agy${extraArgs}`,
         };
     }
-    // 2. Claude Code (claude.exe): uses --session-id <uuid>, --resume <id|name>, --continue (-c), -n <name>
     if (lower === "claude" || lower === "claude.exe") {
         const nameArg = session.hasCustomTitle && safeName ? ` -n "${safeName}"` : "";
         if (isResume) {
@@ -370,7 +416,7 @@ function buildShellLaunch(session, isResume) {
                 return {
                     shellPath: "powershell.exe",
                     shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-                    initialCommand: `claude --resume "${targetKey}"${nameArg}${extraArgs}; if ($LASTEXITCODE -ne 0) { claude --continue${nameArg}${extraArgs} }; if ($LASTEXITCODE -ne 0) { claude${sessionId ? ` --session-id ${sessionId}` : ""}${nameArg}${extraArgs} }`,
+                    initialCommand: `claude --resume "${targetKey}"${nameArg}${extraArgs}; if ($LASTEXITCODE -ne 0) { claude --continue${nameArg}${extraArgs} }; if ($LASTEXITCODE -ne 0) { claude${sessionId ? ` --session-id "${sessionId}"` : ""}${nameArg}${extraArgs} }`,
                 };
             }
             return {
@@ -382,17 +428,16 @@ function buildShellLaunch(session, isResume) {
         return {
             shellPath: "powershell.exe",
             shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-            initialCommand: `claude${sessionId ? ` --session-id ${sessionId}` : ""}${nameArg}${extraArgs}`,
+            initialCommand: `claude${sessionId ? ` --session-id "${sessionId}"` : ""}${nameArg}${extraArgs}`,
         };
     }
-    // 3. Gemini CLI (gemini.cmd): uses --resume <id|latest>
     if (lower === "gemini" || lower === "gemini.cmd") {
         if (isResume) {
             const resumeTarget = sessionId || "latest";
             return {
                 shellPath: "powershell.exe",
                 shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-                initialCommand: `gemini --resume ${resumeTarget}${extraArgs}; if ($LASTEXITCODE -ne 0) { gemini --resume latest${extraArgs} }; if ($LASTEXITCODE -ne 0) { gemini${extraArgs} }`,
+                initialCommand: `gemini --resume "${resumeTarget}"${extraArgs}; if ($LASTEXITCODE -ne 0) { gemini --resume latest${extraArgs} }; if ($LASTEXITCODE -ne 0) { gemini${extraArgs} }`,
             };
         }
         return {
@@ -401,7 +446,6 @@ function buildShellLaunch(session, isResume) {
             initialCommand: `gemini${extraArgs}`,
         };
     }
-    // 4. Codex CLI: uses codex resume --last
     if (lower === "codex" || lower === "codex.cmd") {
         if (isResume) {
             return {
@@ -425,6 +469,7 @@ class AgentCockpitProvider {
     _activeSessionId = null;
     _currentCwd;
     _defaultLocation = "editor";
+    _singleTabZen = true;
     _pollTimer;
     constructor(_context) {
         this._context = _context;
@@ -434,6 +479,7 @@ class AgentCockpitProvider {
         this._sessions = saved.map((meta) => ({
             ...meta,
             status: "stopped",
+            lastActivityAt: meta.createdAt,
             terminal: undefined,
         }));
         this._syncCliStoredSessionNames();
@@ -444,7 +490,7 @@ class AgentCockpitProvider {
             if (this._syncCliStoredSessionNames()) {
                 void this.refreshWebviewState();
             }
-        }, 3000);
+        }, 2500);
         this._context.subscriptions.push({
             dispose: () => clearInterval(this._pollTimer),
         });
@@ -479,28 +525,58 @@ class AgentCockpitProvider {
         if (typeof winAny.onDidStartTerminalShellExecution === "function") {
             this._context.subscriptions.push(winAny.onDidStartTerminalShellExecution((e) => {
                 const sess = this._sessions.find((s) => s.terminal === e.terminal);
-                if (!sess || sess.userRenamed)
+                if (!sess)
                     return;
-                const cmdValue = e.execution?.commandLine?.value || "";
-                const autoTitle = summarizeFirstLine(cmdValue, sess.title);
-                if (autoTitle) {
-                    void this.renameSession(sess.id, autoTitle, false);
+                sess.status = "working";
+                sess.lastActivityAt = Date.now();
+                if (!sess.userRenamed) {
+                    const cmdValue = e.execution?.commandLine?.value || "";
+                    const autoTitle = summarizeFirstLine(cmdValue, sess.title);
+                    if (autoTitle) {
+                        void this.renameSession(sess.id, autoTitle, false);
+                        return;
+                    }
+                }
+                void this.refreshWebviewState();
+            }));
+        }
+        if (typeof winAny.onDidEndTerminalShellExecution === "function") {
+            this._context.subscriptions.push(winAny.onDidEndTerminalShellExecution((e) => {
+                const sess = this._sessions.find((s) => s.terminal === e.terminal);
+                if (!sess)
+                    return;
+                if (isTerminalAlive(sess.terminal)) {
+                    sess.status = "idle";
+                    void this.refreshWebviewState();
                 }
             }));
         }
     }
     /**
-     * Syncs stored CLI session IDs and titles from:
-     * 1. Antigravity CLI (~/.gemini/antigravity-cli/annotations/*.pbtxt & brain/*)
-     * 2. Claude Code (~/.claude/projects/<slug>/*.jsonl)
+     * Toggle VS Code's top editor tab bar visibility so the left sidebar can act as the
+     * single source of truth without a redundant duplicate top tab strip (+35px height).
      */
+    async _toggleTopEditorTabBar() {
+        const wbConfig = vscode.workspace.getConfiguration("workbench.editor");
+        const current = wbConfig.get("showTabs") || "multiple";
+        const next = current === "none" ? "multiple" : "none";
+        try {
+            await wbConfig.update("showTabs", next, vscode.ConfigurationTarget.Global);
+            this._singleTabZen = next === "none";
+        }
+        catch {
+            // Fallback command
+            await vscode.commands.executeCommand(next === "none"
+                ? "workbench.action.hideEditorTabs"
+                : "workbench.action.showMultipleEditorTabs");
+        }
+        await this.refreshWebviewState();
+    }
     _syncCliStoredSessionNames() {
         let changed = false;
-        // A. Sync Antigravity CLI (agy) conversations
         const agyDiscovered = discoverAgySessions(this._currentCwd);
         for (const disc of agyDiscovered) {
             let match = this._sessions.find((s) => s.cliSessionId === disc.cliSessionId);
-            // Bind to a newly spawned unbound running AGY session
             if (!match) {
                 match = this._sessions.find((s) => s.command.toLowerCase().startsWith("agy") &&
                     !s.cliSessionId &&
@@ -512,6 +588,12 @@ class AgentCockpitProvider {
             }
             if (match) {
                 match.cliSessionName = disc.title;
+                if (isTerminalAlive(match.terminal)) {
+                    if (match.status !== disc.runtimeHint) {
+                        match.status = disc.runtimeHint;
+                        changed = true;
+                    }
+                }
                 if (!match.userRenamed && match.title !== disc.title) {
                     match.title = disc.title;
                     match.hasCustomTitle = true;
@@ -526,14 +608,13 @@ class AgentCockpitProvider {
                 }
             }
             else {
-                // Import recent stored AGY conversation into left pane
                 const imported = {
                     id: `sess-agy-${disc.cliSessionId.slice(0, 8)}`,
                     cliSessionId: disc.cliSessionId,
                     cliSessionName: disc.title,
                     title: disc.title,
                     badge: "✦",
-                    color: "#1a73e8",
+                    color: "#3b82f6",
                     command: "agy",
                     args: [],
                     cwd: disc.cwd,
@@ -541,6 +622,7 @@ class AgentCockpitProvider {
                     userRenamed: false,
                     location: this._defaultLocation,
                     status: "stopped",
+                    lastActivityAt: disc.mtimeMs,
                     terminal: undefined,
                     createdAt: disc.mtimeMs,
                 };
@@ -548,7 +630,6 @@ class AgentCockpitProvider {
                 changed = true;
             }
         }
-        // B. Sync Claude Code sessions
         const cwdsToScan = new Set([this._currentCwd]);
         for (const s of this._sessions) {
             if (s.cwd)
@@ -569,6 +650,12 @@ class AgentCockpitProvider {
                 }
                 if (match) {
                     match.cliSessionName = disc.title;
+                    if (isTerminalAlive(match.terminal)) {
+                        if (match.status !== disc.runtimeHint) {
+                            match.status = disc.runtimeHint;
+                            changed = true;
+                        }
+                    }
                     if (!match.userRenamed && match.title !== disc.title) {
                         match.title = disc.title;
                         match.hasCustomTitle = true;
@@ -589,7 +676,7 @@ class AgentCockpitProvider {
                         cliSessionName: disc.title,
                         title: disc.title,
                         badge: "C",
-                        color: "#d97757",
+                        color: "#e07a5f",
                         command: "claude",
                         args: [],
                         cwd: disc.cwd,
@@ -597,6 +684,7 @@ class AgentCockpitProvider {
                         userRenamed: false,
                         location: this._defaultLocation,
                         status: "stopped",
+                        lastActivityAt: disc.mtimeMs,
                         terminal: undefined,
                         createdAt: disc.mtimeMs,
                     };
@@ -613,7 +701,9 @@ class AgentCockpitProvider {
     _syncLiveness() {
         for (const s of this._sessions) {
             if (isTerminalAlive(s.terminal)) {
-                s.status = "running";
+                if (s.status === "stopped") {
+                    s.status = "idle";
+                }
             }
             else {
                 s.terminal = undefined;
@@ -661,11 +751,14 @@ class AgentCockpitProvider {
                         msg.location === "panel" ? "panel" : "editor";
                     await this.refreshWebviewState();
                     break;
+                case "toggleTopTabs":
+                    await this._toggleTopEditorTabBar();
+                    break;
                 case "spawnSession":
                     await this.spawnSession({
                         title: msg.title,
                         badge: msg.badge || ">_",
-                        color: msg.color || "#1a73e8",
+                        color: msg.color || "#3b82f6",
                         command: msg.command,
                         args: msg.args || [],
                         cwd: msg.cwd || this._currentCwd,
@@ -697,7 +790,7 @@ class AgentCockpitProvider {
                     await this.sendActiveEditorSelectionToAgent(msg.id);
                     break;
                 case "mentionFile":
-                    await this.sendTextToActiveAgent(`@${msg.file} `, false);
+                    await this.sendTextToActiveAgent(formatAtFileRef(msg.file), false);
                     break;
                 case "openFileDiff":
                     await this._openGitDiffForFile(msg.file);
@@ -810,7 +903,8 @@ class AgentCockpitProvider {
             hasCustomTitle: false,
             userRenamed: false,
             location: params.location,
-            status: "running",
+            status: "idle",
+            lastActivityAt: Date.now(),
             createdAt: Date.now(),
         };
         session.terminal = this._createVsTerminalForSession(session, false);
@@ -832,7 +926,6 @@ class AgentCockpitProvider {
         if (userInitiated) {
             found.userRenamed = true;
             found.cliSessionName = trimmed;
-            // Also persist the updated title back to Antigravity CLI's annotation file if this is an AGY session
             if (found.command.toLowerCase().startsWith("agy") &&
                 found.cliSessionId) {
                 try {
@@ -874,13 +967,25 @@ class AgentCockpitProvider {
     async sendQuickPromptToActiveAgent(promptText) {
         const active = this._sessions.find((s) => s.id === this._activeSessionId) ??
             this._sessions[this._sessions.length - 1];
-        if (active && !active.hasCustomTitle) {
-            const autoTitle = summarizeFirstLine(promptText, active.title);
-            if (autoTitle) {
-                await this.renameSession(active.id, autoTitle, false);
+        if (active) {
+            active.status = "working";
+            active.lastActivityAt = Date.now();
+            if (!active.hasCustomTitle) {
+                const autoTitle = summarizeFirstLine(promptText, active.title);
+                if (autoTitle) {
+                    await this.renameSession(active.id, autoTitle, false);
+                }
             }
         }
         await this.sendTextToActiveAgent(promptText, true);
+        // Immediately move keyboard focus into the terminal canvas so follow-up TUI keystrokes
+        // (y, Esc, Shift+Tab, arrows) go straight to the interactive CLI!
+        try {
+            await vscode.commands.executeCommand("workbench.action.terminal.focus");
+        }
+        catch {
+            // ignore
+        }
     }
     focusSessionByIndex(indexZeroBased) {
         if (indexZeroBased < 0 || indexZeroBased >= this._sessions.length)
@@ -894,8 +999,15 @@ class AgentCockpitProvider {
         this._activeSessionId = found.id;
         this._currentCwd = found.cwd;
         if (isTerminalAlive(found.terminal)) {
-            found.status = "running";
+            if (found.status === "stopped")
+                found.status = "idle";
             found.terminal.show(false);
+            try {
+                await vscode.commands.executeCommand("workbench.action.terminal.focus");
+            }
+            catch {
+                // ignore
+            }
             await this.refreshWebviewState();
         }
         else {
@@ -917,10 +1029,16 @@ class AgentCockpitProvider {
         const cwd = fs.existsSync(found.cwd) ? found.cwd : this._currentCwd;
         found.cwd = cwd;
         found.terminal = this._createVsTerminalForSession(found, isResume);
-        found.status = "running";
+        found.status = "idle";
         this._activeSessionId = found.id;
         this._currentCwd = cwd;
         this._persistSessions();
+        try {
+            await vscode.commands.executeCommand("workbench.action.terminal.focus");
+        }
+        catch {
+            // ignore
+        }
         await this.refreshWebviewState();
     }
     async deleteSessionById(id) {
@@ -970,6 +1088,12 @@ class AgentCockpitProvider {
         }
         active.terminal?.show(false);
         active.terminal?.sendText(text, addNewLine);
+        try {
+            await vscode.commands.executeCommand("workbench.action.terminal.focus");
+        }
+        catch {
+            // ignore
+        }
     }
     async sendActiveEditorSelectionToAgent(targetSessionId) {
         const editor = vscode.window.activeTextEditor;
@@ -991,10 +1115,10 @@ class AgentCockpitProvider {
         const sel = editor.selection;
         const startLine = sel.start.line + 1;
         const endLine = sel.end.line + 1;
-        const refText = !sel.isEmpty && startLine !== endLine
-            ? `@${relPath}:${startLine}-${endLine} `
-            : `@${relPath}:${startLine} `;
-        await this.sendTextToActiveAgent(refText, false);
+        const lineRange = !sel.isEmpty && startLine !== endLine
+            ? `${startLine}-${endLine}`
+            : `${startLine}`;
+        await this.sendTextToActiveAgent(formatAtFileRef(relPath, lineRange), false);
     }
     async _openGitDiffForFile(relFile) {
         const fullPath = path.join(this._currentCwd, relFile);
@@ -1052,7 +1176,7 @@ class AgentCockpitProvider {
                 .filter((line) => line.trim().length > 0)
                 .map((line) => ({
                 status: line.slice(0, 2).trim() || "M",
-                file: line.slice(3).trim(),
+                file: line.slice(3).trim().replace(/^"(.*)"$/, "$1"),
             }))
                 .slice(0, 25);
             return { branch, changes };
@@ -1067,11 +1191,14 @@ class AgentCockpitProvider {
         this._syncLiveness();
         const gitInfo = await this._getGitChanges(this._currentCwd);
         const handoffContent = this._readHandoffContent();
+        const wbConfig = vscode.workspace.getConfiguration("workbench.editor");
+        const showTabs = wbConfig.get("showTabs") || "multiple";
         this._view.webview.postMessage({
             type: "state",
             currentCwd: this._currentCwd,
             folderName: path.basename(this._currentCwd) || this._currentCwd,
             defaultLocation: this._defaultLocation,
+            topTabsHidden: showTabs === "none",
             activeSessionId: this._activeSessionId,
             presets: DEFAULT_PRESETS,
             gitBranch: gitInfo.branch,
@@ -1099,28 +1226,51 @@ class AgentCockpitProvider {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
+    /* Rich Slate Dark Theme by default (eliminates blinding white & makes status dots pop) */
     :root {
-      --md-surface: var(--vscode-editor-background, #ffffff);
-      --md-border: rgba(128, 134, 139, 0.36);
-      --md-border-strong: rgba(128, 134, 139, 0.58);
-      --md-primary: #1a73e8;
-      --md-primary-bg: rgba(26, 115, 232, 0.12);
-      --md-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
-      --md-shadow-md: 0 3px 6px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08);
-      --md-muted: var(--vscode-descriptionForeground, #5f6368);
+      --bg-shell: #0f141c;
+      --md-surface: #171f2c;
+      --md-surface-hover: #1e293b;
+      --md-fg: #e2e8f0;
+      --md-muted: #94a3b8;
+      --md-border: #2a3649;
+      --md-border-strong: #475569;
+      --md-primary: #3b82f6;
+      --md-primary-bg: rgba(59, 130, 246, 0.16);
+      --md-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+      --md-shadow-md: 0 4px 10px rgba(0, 0, 0, 0.45);
       --md-radius: 8px;
+      --st-working: #22c55e;
+      --st-needs-input: #f59e0b;
+      --st-idle: #38bdf8;
+      --st-stopped: #64748b;
     }
+
+    body.theme-light {
+      --bg-shell: #f1f5f9;
+      --md-surface: #ffffff;
+      --md-surface-hover: #f8fafc;
+      --md-fg: #0f172a;
+      --md-muted: #64748b;
+      --md-border: #cbd5e1;
+      --md-border-strong: #94a3b8;
+      --md-primary: #2563eb;
+      --md-primary-bg: rgba(37, 99, 235, 0.1);
+      --md-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.07);
+      --md-shadow-md: 0 3px 6px rgba(15, 23, 42, 0.11);
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: "Segoe UI", Roboto, -apple-system, sans-serif;
       font-size: 12px;
-      color: var(--vscode-foreground);
-      background: transparent;
+      color: var(--md-fg);
+      background: var(--bg-shell);
       padding: 10px;
       height: 100vh;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 9px;
       user-select: none;
     }
 
@@ -1128,7 +1278,7 @@ class AgentCockpitProvider {
     .top-bar {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
     }
     .cwd-btn {
       flex: 1;
@@ -1139,20 +1289,18 @@ class AgentCockpitProvider {
       border: 1px solid var(--md-border);
       border-radius: var(--md-radius);
       box-shadow: var(--md-shadow-sm);
-      padding: 6px 10px;
+      padding: 6px 9px;
       cursor: pointer;
       overflow: hidden;
-      font-size: 12px;
-      color: var(--vscode-foreground);
-      transition: all 0.15s ease;
+      font-size: 11.5px;
+      color: var(--md-fg);
+      transition: all 0.14s ease;
     }
     .cwd-btn:hover {
       border-color: var(--md-primary);
+      background: var(--md-surface-hover);
       box-shadow: var(--md-shadow-md);
       transform: translateY(-1px);
-    }
-    .cwd-btn:active {
-      transform: translateY(0);
     }
     .cwd-name {
       font-weight: 600;
@@ -1163,7 +1311,7 @@ class AgentCockpitProvider {
     .branch-chip {
       font-size: 10px;
       font-weight: 600;
-      color: var(--md-primary);
+      color: #60a5fa;
       background: var(--md-primary-bg);
       padding: 1px 6px;
       border-radius: 99px;
@@ -1177,20 +1325,20 @@ class AgentCockpitProvider {
       box-shadow: var(--md-shadow-sm);
       color: var(--md-muted);
       border-radius: var(--md-radius);
-      padding: 6px 9px;
-      font-size: 11px;
+      padding: 6px 7px;
+      font-size: 10.5px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: all 0.14s ease;
     }
     .chip-btn:hover {
       border-color: var(--md-border-strong);
-      color: var(--vscode-foreground);
-      box-shadow: var(--md-shadow-md);
+      color: var(--md-fg);
+      background: var(--md-surface-hover);
       transform: translateY(-1px);
     }
     .chip-btn.active {
-      color: var(--md-primary);
+      color: #60a5fa;
       border-color: var(--md-primary);
       background: var(--md-primary-bg);
     }
@@ -1198,8 +1346,8 @@ class AgentCockpitProvider {
     /* Material Agent Launch Buttons */
     .launch-bar {
       display: grid;
-      grid-template-columns: repeat(4, 1fr) 34px;
-      gap: 6px;
+      grid-template-columns: repeat(4, 1fr) 32px;
+      gap: 5px;
     }
     .md-btn {
       display: flex;
@@ -1210,25 +1358,22 @@ class AgentCockpitProvider {
       border: 1px solid var(--md-border);
       border-radius: var(--md-radius);
       box-shadow: var(--md-shadow-sm);
-      color: var(--vscode-foreground);
-      padding: 7px 6px;
-      font-size: 11.5px;
+      color: var(--md-fg);
+      padding: 7px 5px;
+      font-size: 11px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: all 0.14s ease;
     }
     .md-btn:hover {
       border-color: var(--md-primary);
+      background: var(--md-surface-hover);
       box-shadow: var(--md-shadow-md);
       transform: translateY(-1px);
     }
-    .md-btn:active {
-      transform: translateY(0);
-      box-shadow: var(--md-shadow-sm);
-    }
     .agent-dot {
-      width: 16px;
-      height: 16px;
+      width: 17px;
+      height: 17px;
       border-radius: 5px;
       display: inline-flex;
       align-items: center;
@@ -1237,51 +1382,38 @@ class AgentCockpitProvider {
       font-weight: 700;
       color: #ffffff;
       flex-shrink: 0;
-      position: relative;
     }
-    .state-pip {
-      position: absolute;
-      bottom: -2px;
-      right: -2px;
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      border: 1.5px solid var(--md-surface);
-    }
-    .pip-running { background: #1e8e3e; }
-    .pip-stopped { background: #f29900; }
 
     /* Custom Command Card */
     .custom-drawer {
       display: none;
-      gap: 6px;
+      gap: 5px;
       background: var(--md-surface);
       border: 1px solid var(--md-border);
       border-radius: var(--md-radius);
       box-shadow: var(--md-shadow-sm);
-      padding: 8px;
+      padding: 7px;
     }
     .custom-drawer.open { display: flex; }
 
     input[type="text"], textarea {
       width: 100%;
       background: var(--md-surface);
-      color: var(--vscode-foreground);
+      color: var(--md-fg);
       border: 1px solid var(--md-border);
       border-radius: 6px;
-      padding: 6px 9px;
+      padding: 6px 8px;
       font-size: 11.5px;
       font-family: inherit;
-      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
-      transition: border-color 0.15s, box-shadow 0.15s;
+      transition: border-color 0.14s, box-shadow 0.14s;
     }
     input[type="text"]:focus, textarea:focus {
       outline: none;
       border-color: var(--md-primary);
-      box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.18);
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.22);
     }
 
-    /* Material Session Cards */
+    /* Material Session Cards with Live Status & Shortcut Badges */
     .sessions-container {
       flex: 1;
       overflow-y: auto;
@@ -1293,17 +1425,18 @@ class AgentCockpitProvider {
     .session-card {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 8px 10px;
+      gap: 7px;
+      padding: 8px 9px;
       background: var(--md-surface);
       border: 1px solid var(--md-border);
       border-radius: var(--md-radius);
       box-shadow: var(--md-shadow-sm);
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: all 0.14s ease;
     }
     .session-card:hover {
       border-color: var(--md-border-strong);
+      background: var(--md-surface-hover);
       box-shadow: var(--md-shadow-md);
       transform: translateY(-1px);
     }
@@ -1312,46 +1445,104 @@ class AgentCockpitProvider {
       border-left: 4px solid var(--md-primary);
       background: var(--md-primary-bg);
     }
+
+    /* Live Status Dot */
+    .status-led {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .led-working {
+      background: var(--st-working);
+      box-shadow: 0 0 8px var(--st-working);
+      animation: pulse 1.3s infinite ease-in-out;
+    }
+    .led-needs-input {
+      background: var(--st-needs-input);
+      box-shadow: 0 0 8px var(--st-needs-input);
+      animation: pulse 1.1s infinite ease-in-out;
+    }
+    .led-idle {
+      background: var(--st-idle);
+      box-shadow: 0 0 5px rgba(56, 189, 248, 0.45);
+    }
+    .led-stopped {
+      background: var(--st-stopped);
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.28); opacity: 0.65; }
+    }
+
     .s-title {
       flex: 1;
       font-weight: 600;
-      font-size: 12px;
+      font-size: 11.8px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
     .s-rename-input {
       flex: 1;
-      padding: 3px 6px !important;
+      padding: 2px 5px !important;
       font-size: 11.5px !important;
     }
-    .s-folder {
-      font-size: 10.5px;
-      font-weight: 500;
-      color: var(--md-muted);
-      background: rgba(128, 134, 139, 0.12);
-      padding: 2px 6px;
-      border-radius: 4px;
-      white-space: nowrap;
-    }
-    .resume-badge {
-      font-size: 10px;
+    .shortcut-pill {
+      font-family: monospace;
+      font-size: 9.5px;
       font-weight: 600;
-      color: var(--md-primary);
-      background: var(--md-primary-bg);
-      border: 1px solid rgba(26, 115, 232, 0.35);
-      padding: 2px 6px;
+      color: var(--md-muted);
+      background: rgba(148, 163, 184, 0.12);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      padding: 1px 4px;
       border-radius: 4px;
       white-space: nowrap;
     }
-    .row-actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
+    .state-tag {
+      font-size: 9.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      padding: 2px 5px;
+      border-radius: 4px;
+      white-space: nowrap;
     }
+    .tag-working {
+      color: #4ade80;
+      background: rgba(34, 197, 94, 0.15);
+    }
+    .tag-needs-input {
+      color: #fbbf24;
+      background: rgba(245, 158, 11, 0.18);
+    }
+    .tag-idle {
+      color: var(--md-muted);
+      background: rgba(148, 163, 184, 0.12);
+    }
+    .tag-stopped {
+      color: #60a5fa;
+      background: var(--md-primary-bg);
+      border: 1px solid rgba(59, 130, 246, 0.35);
+    }
+
+    .row-actions {
+      display: none;
+      align-items: center;
+      gap: 3px;
+    }
+    .session-card:hover .row-actions {
+      display: flex;
+    }
+    .session-card:hover .state-tag,
+    .session-card:hover .shortcut-pill {
+      display: none;
+    }
+
     .icon-action {
-      width: 22px;
-      height: 22px;
+      width: 21px;
+      height: 21px;
       border-radius: 5px;
       border: 1px solid var(--md-border);
       background: var(--md-surface);
@@ -1360,18 +1551,18 @@ class AgentCockpitProvider {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: 11px;
+      font-size: 10.5px;
       transition: all 0.12s;
     }
     .icon-action:hover {
-      color: var(--md-primary);
+      color: #60a5fa;
       border-color: var(--md-primary);
       background: var(--md-primary-bg);
     }
     .icon-action.danger:hover {
-      color: #d93025;
-      border-color: #d93025;
-      background: rgba(217, 48, 37, 0.1);
+      color: #f87171;
+      border-color: #ef4444;
+      background: rgba(239, 68, 68, 0.15);
     }
 
     .empty-card {
@@ -1388,13 +1579,13 @@ class AgentCockpitProvider {
     .footer-bar {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 7px;
       padding-top: 8px;
       border-top: 1px solid var(--md-border);
     }
     .prompt-box {
       display: flex;
-      gap: 6px;
+      gap: 5px;
     }
     .send-btn {
       background: var(--md-primary);
@@ -1406,37 +1597,35 @@ class AgentCockpitProvider {
       font-weight: 600;
       cursor: pointer;
       box-shadow: var(--md-shadow-sm);
-      transition: all 0.15s;
     }
     .send-btn:hover {
-      background: #1557b0;
-      box-shadow: var(--md-shadow-md);
+      background: #2563eb;
     }
     .footer-tabs {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
+      gap: 5px;
     }
     .footer-btn {
       background: var(--md-surface);
       border: 1px solid var(--md-border);
       border-radius: var(--md-radius);
       box-shadow: var(--md-shadow-sm);
-      color: var(--vscode-foreground);
-      padding: 6px 8px;
-      font-size: 11px;
+      color: var(--md-fg);
+      padding: 6px 7px;
+      font-size: 10.8px;
       font-weight: 600;
       cursor: pointer;
       text-align: center;
-      transition: all 0.15s ease;
+      transition: all 0.14s ease;
     }
     .footer-btn:hover {
       border-color: var(--md-primary);
-      box-shadow: var(--md-shadow-md);
+      background: var(--md-surface-hover);
       transform: translateY(-1px);
     }
     .footer-btn.active {
-      color: var(--md-primary);
+      color: #60a5fa;
       border-color: var(--md-primary);
       background: var(--md-primary-bg);
     }
@@ -1465,9 +1654,9 @@ class AgentCockpitProvider {
     }
     .git-row:hover {
       border-color: var(--md-border);
-      background: rgba(128, 134, 139, 0.06);
+      background: var(--md-surface-hover);
     }
-    .git-st { color: #e37400; font-family: monospace; font-weight: 700; font-size: 10.5px; width: 14px; }
+    .git-st { color: #fbbf24; font-family: monospace; font-weight: 700; font-size: 10.5px; width: 14px; }
     .git-path {
       flex: 1;
       white-space: nowrap;
@@ -1487,11 +1676,14 @@ class AgentCockpitProvider {
       <span id="cwd-name" class="cwd-name">workspace</span>
       <span id="branch-tag" class="branch-chip" style="display:none;"></span>
     </button>
-    <button id="loc-toggle" class="chip-btn active" title="Toggle Editor Tab vs Bottom Panel">
-      Tab
+    <button id="zen-tabs-toggle" class="chip-btn" title="Hide/Show redundant top Editor Tab bar (+35px terminal height)">
+      Zen
     </button>
     <button id="wt-toggle" class="chip-btn" title="Isolate next session in a new Git Worktree">
       WT
+    </button>
+    <button id="theme-toggle" class="chip-btn" title="Toggle Dark Slate vs Light sidebar theme">
+      🌙
     </button>
   </div>
 
@@ -1524,9 +1716,9 @@ class AgentCockpitProvider {
       <input
         id="quick-prompt-input"
         type="text"
-        placeholder="Prompt active agent (auto-names tab)…"
+        placeholder="Kick off prompt (focuses terminal on Enter)…"
       />
-      <button id="quick-prompt-btn" class="send-btn" title="Send prompt">↵</button>
+      <button id="quick-prompt-btn" class="send-btn" title="Send prompt & focus terminal">↵</button>
     </div>
 
     <div class="footer-tabs">
@@ -1544,13 +1736,15 @@ class AgentCockpitProvider {
       defaultLocation: "editor",
       useWorktree: false,
       activeFooter: null,
+      lightMode: false,
     };
 
     const cwdPill = document.getElementById("cwd-pill");
     const cwdName = document.getElementById("cwd-name");
     const branchTag = document.getElementById("branch-tag");
-    const locToggle = document.getElementById("loc-toggle");
+    const zenTabsToggle = document.getElementById("zen-tabs-toggle");
     const wtToggle = document.getElementById("wt-toggle");
+    const themeToggle = document.getElementById("theme-toggle");
     const presetButtons = document.getElementById("preset-buttons");
     const customToggle = document.getElementById("custom-toggle");
     const customDrawer = document.getElementById("custom-drawer");
@@ -1570,14 +1764,19 @@ class AgentCockpitProvider {
       vscode.postMessage({ type: "browseCwd" });
     });
 
-    locToggle.addEventListener("click", () => {
-      const next = state.defaultLocation === "editor" ? "panel" : "editor";
-      vscode.postMessage({ type: "setLocation", location: next });
+    zenTabsToggle.addEventListener("click", () => {
+      vscode.postMessage({ type: "toggleTopTabs" });
     });
 
     wtToggle.addEventListener("click", () => {
       state.useWorktree = !state.useWorktree;
       wtToggle.classList.toggle("active", state.useWorktree);
+    });
+
+    themeToggle.addEventListener("click", () => {
+      state.lightMode = !state.lightMode;
+      document.body.classList.toggle("theme-light", state.lightMode);
+      themeToggle.textContent = state.lightMode ? "☀️" : "🌙";
     });
 
     customToggle.addEventListener("click", () => {
@@ -1592,7 +1791,7 @@ class AgentCockpitProvider {
         type: "spawnSession",
         title: parts[0],
         badge: ">_",
-        color: "#5f6368",
+        color: "#64748b",
         command: parts[0],
         args: parts.slice(1),
         cwd: state.currentCwd,
@@ -1609,16 +1808,22 @@ class AgentCockpitProvider {
     customGo.addEventListener("click", launchCustom);
 
     function submitQuickPrompt() {
-      if (!quickPromptInput.value.trim()) return;
+      const val = quickPromptInput.value.trim();
+      if (!val) return;
+      quickPromptInput.value = "";
+      // Blur immediately so follow-up keystrokes (y, Esc, Shift+Tab) go straight to the PTY terminal
+      quickPromptInput.blur();
       vscode.postMessage({
         type: "sendQuickPrompt",
-        prompt: quickPromptInput.value.trim(),
+        prompt: val,
       });
-      quickPromptInput.value = "";
     }
 
     quickPromptInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") submitQuickPrompt();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submitQuickPrompt();
+      }
     });
     quickPromptBtn.addEventListener("click", submitQuickPrompt);
 
@@ -1689,6 +1894,13 @@ class AgentCockpitProvider {
       input.select();
     }
 
+    function statusLabelFor(status, folderName) {
+      if (status === "working") return { cls: "tag-working", text: "Streaming" };
+      if (status === "needs-input") return { cls: "tag-needs-input", text: "Approval?" };
+      if (status === "stopped") return { cls: "tag-stopped", text: "↻ Resume" };
+      return { cls: "tag-idle", text: folderName };
+    }
+
     window.addEventListener("message", (event) => {
       const msg = event.data;
       if (msg.type !== "state") return;
@@ -1705,8 +1917,7 @@ class AgentCockpitProvider {
         branchTag.style.display = "none";
       }
 
-      locToggle.textContent = msg.defaultLocation === "editor" ? "Tab" : "Panel";
-      locToggle.classList.toggle("active", msg.defaultLocation === "editor");
+      zenTabsToggle.classList.toggle("active", Boolean(msg.topTabsHidden));
 
       // Material Agent Launch Buttons
       presetButtons.innerHTML = "";
@@ -1740,27 +1951,26 @@ class AgentCockpitProvider {
       } else {
         msg.sessions.forEach((s) => {
           const isStopped = s.status === "stopped";
+          const tagInfo = statusLabelFor(s.status, s.folderName);
+          const shortcutBadge = s.index <= 5 ? '<span class="shortcut-pill">⌃' + s.index + '</span>' : '';
           const card = document.createElement("div");
           card.className =
             "session-card" +
             (s.id === msg.activeSessionId ? " active" : "") +
             (isStopped ? " stopped" : "");
           card.title = isStopped
-            ? "Terminal closed — Click to resume conversation (" + (s.cliSessionId ? s.cliSessionId.slice(0, 8) : s.title) + ")"
-            : "Running — Click to focus · Double-click title to rename";
+            ? "Paused — Click to resume conversation (" + s.folderName + ")"
+            : "Status: " + s.status + " · Folder: " + s.cwd + " · Double-click title to rename";
           card.innerHTML =
-            '<span class="agent-dot" style="background:' + (s.color || "#1a73e8") + ';">' +
-              s.badge +
-              '<span class="state-pip ' + (isStopped ? "pip-stopped" : "pip-running") + '"></span>' +
-            '</span>' +
+            '<span class="status-led led-' + s.status + '"></span>' +
+            '<span class="agent-dot" style="background:' + (s.color || "#3b82f6") + ';">' + s.badge + '</span>' +
             '<span class="s-title">' + s.title + '</span>' +
-            (isStopped
-              ? '<span class="resume-badge">↻ Resume</span>'
-              : '<span class="s-folder">' + s.folderName + '</span>') +
+            '<span class="state-tag ' + tagInfo.cls + '">' + tagInfo.text + '</span>' +
+            shortcutBadge +
             '<div class="row-actions">' +
               '<button class="icon-action act-rename" title="Rename">✎</button>' +
               '<button class="icon-action act-send" title="Send @file:line">@</button>' +
-              '<button class="icon-action danger act-delete" title="Remove session from list">✕</button>' +
+              '<button class="icon-action danger act-delete" title="Remove session">✕</button>' +
             '</div>';
 
           card.addEventListener("click", () => {
@@ -1869,7 +2079,7 @@ function activate(context) {
             await provider.spawnSession({
                 title: customCmd,
                 badge: ">_",
-                color: "#5f6368",
+                color: "#64748b",
                 command: customCmd,
                 args: [],
                 cwd,

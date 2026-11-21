@@ -291,7 +291,7 @@ body,
 .xterm-mount {
   flex: 1;
   width: 100%;
-  height: calc(100% - 28px);
+  height: 100%;
   padding: 6px 8px;
   overflow: hidden;
 }

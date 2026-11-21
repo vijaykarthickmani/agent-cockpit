@@ -225,10 +225,16 @@ export const App: React.FC = () => {
         </div>
 
         <div className="session-list">
-          {sessions.map((s) => {
+          {sessions.map((s, idx) => {
             const isSelected = s.id === activeSessionId;
             const folderName =
               s.cwd.split(/[\\/]/).filter(Boolean).pop() || s.cwd;
+            const statusText =
+              s.status === "working"
+                ? "Streaming"
+                : s.status === "needs-input"
+                ? "Approval?"
+                : folderName;
             return (
               <div
                 key={s.id}
@@ -236,7 +242,7 @@ export const App: React.FC = () => {
                 onClick={() => setActiveSessionId(s.id)}
                 role="button"
                 tabIndex={0}
-                title={`${s.title} — ${s.cwd}`}
+                title={`${s.title} (${s.status}) — ${s.cwd}`}
               >
                 <span className={`status-indicator status-${s.status}`} />
                 {editingSessionId === s.id ? (
@@ -274,7 +280,12 @@ export const App: React.FC = () => {
                     {s.title}
                   </span>
                 )}
-                <span className="session-folder">{folderName}</span>
+                <span className={`session-folder status-pill-${s.status}`}>
+                  {statusText}
+                </span>
+                {idx < 9 && (
+                  <span className="shortcut-hint">⌃{idx + 1}</span>
+                )}
                 <button
                   type="button"
                   className="session-close-btn"
