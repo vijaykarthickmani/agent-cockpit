@@ -200,10 +200,74 @@ interface DiscoveredCliSession {
   agentType: "claude" | "agy";
 }
 
+interface ScheduledJob {
+  id: string;
+  name: string;
+  cliId: string;
+  cliName: string;
+  command: string;
+  args: string[];
+  badge: string;
+  color: string;
+  cwd: string;
+  prompt: string;
+  scheduleType: "interval" | "daily" | "weekdays";
+  intervalMinutes?: number;
+  dailyTime?: string; // "HH:MM"
+  enabled: boolean;
+  lastRunAt?: number;
+  nextRunAt: number;
+  lastSessionId?: string;
+}
+
 const STORAGE_KEY = "agentCockpit.retainedSessions.v3";
 const DISMISSED_KEY = "agentCockpit.dismissedCliIds.v1";
 const SOUND_PREF_KEY = "agentCockpit.soundEnabled.v1";
 const LAST_CLI_KEY = "agentCockpit.lastUsedCliId.v1";
+const STORAGE_JOBS_KEY = "agentCockpit.scheduledJobs.v1";
+
+function computeNextRunAt(
+  job: Pick<ScheduledJob, "scheduleType" | "intervalMinutes" | "dailyTime">,
+  fromMs = Date.now()
+): number {
+  if (job.scheduleType === "interval") {
+    const mins = Math.max(1, job.intervalMinutes || 30);
+    return fromMs + mins * 60_000;
+  }
+
+  const [hStr, mStr] = (job.dailyTime || "09:00").split(":");
+  const targetH = Math.min(23, Math.max(0, parseInt(hStr || "9", 10) || 0));
+  const targetM = Math.min(59, Math.max(0, parseInt(mStr || "0", 10) || 0));
+
+  const candidate = new Date(fromMs);
+  candidate.setSeconds(0, 0);
+  candidate.setHours(targetH, targetM, 0, 0);
+
+  if (candidate.getTime() <= fromMs) {
+    candidate.setDate(candidate.getDate() + 1);
+  }
+
+  if (job.scheduleType === "weekdays") {
+    while (candidate.getDay() === 0 || candidate.getDay() === 6) {
+      candidate.setDate(candidate.getDate() + 1);
+    }
+  }
+
+  return candidate.getTime();
+}
+
+function formatScheduleLabel(job: ScheduledJob): string {
+  if (job.scheduleType === "interval") {
+    const mins = job.intervalMinutes || 30;
+    return mins >= 60 && mins % 60 === 0
+      ? `Every ${mins / 60}h`
+      : `Every ${mins}m`;
+  }
+  if (job.scheduleType === "weekdays") {
+    return `Weekdays ${job.dailyTime || "09:00"}`;
+  }
+  return `Daily ${job.dailyTime || "09:00"}`;
+}
 
 function isTerminalAlive(term?: vscode.Terminal): term is vscode.Terminal {
   if (!term) return false;
@@ -1228,6 +1292,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   private _defaultLocation: "editor" | "panel" = "editor";
   private _soundEnabled: boolean;
   private _lastUsedCliId: string;
+  private _jobs: ScheduledJob[] = [];
   private _pollTimer: NodeJS.Timeout;
 
   constructor(private readonly _context: vscode.ExtensionContext) {
@@ -1243,6 +1308,17 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       this._context.globalState.get<string>(LAST_CLI_KEY) ||
       installed[0]?.id ||
       "agy";
+
+    const savedJobs =
+      this._context.globalState.get<ScheduledJob[]>(STORAGE_JOBS_KEY) || [];
+    const bootNow = Date.now();
+    this._jobs = savedJobs.map((j) => ({
+      ...j,
+      nextRunAt:
+        j.nextRunAt && j.nextRunAt > bootNow
+          ? j.nextRunAt
+          : computeNextRunAt(j, bootNow),
+    }));
 
     const savedDismissed =
       this._context.globalState.get<string[]>(DISMISSED_KEY) || [];
@@ -1271,7 +1347,9 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     }
 
     this._pollTimer = setInterval(() => {
-      if (this._syncCliStoredSessionNames()) {
+      const cliChanged = this._syncCliStoredSessionNames();
+      const jobsFired = this._checkScheduledJobs();
+      if (cliChanged || jobsFired) {
         void this.refreshWebviewState();
       }
     }, 2500);
@@ -1593,6 +1671,193 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private _persistJobs() {
+    void this._context.globalState.update(STORAGE_JOBS_KEY, this._jobs);
+  }
+
+  private _checkScheduledJobs(): boolean {
+    const now = Date.now();
+    let fired = false;
+    for (const job of this._jobs) {
+      if (!job.enabled) continue;
+      if (now >= job.nextRunAt) {
+        job.lastRunAt = now;
+        job.nextRunAt = computeNextRunAt(job, now + 1000);
+        fired = true;
+        void this._executeScheduledJob(job);
+      }
+    }
+    if (fired) {
+      this._persistJobs();
+    }
+    return fired;
+  }
+
+  private async _executeScheduledJob(job: ScheduledJob) {
+    const now = Date.now();
+    job.lastRunAt = now;
+    if (job.enabled) {
+      job.nextRunAt = computeNextRunAt(job, now + 1000);
+    }
+    this._persistJobs();
+
+    const lowerCmd = job.command.toLowerCase();
+    const isShell =
+      lowerCmd === "powershell.exe" ||
+      lowerCmd === "powershell" ||
+      lowerCmd === "cmd.exe" ||
+      lowerCmd === "cmd";
+
+    // Reuse existing live terminal for this job if open
+    let session = job.lastSessionId
+      ? this._sessions.find((s) => s.id === job.lastSessionId)
+      : undefined;
+
+    if (session && isTerminalAlive(session.terminal)) {
+      session.terminal.show(false);
+      if (job.prompt.trim()) {
+        session.terminal.sendText(job.prompt.trim(), true);
+      }
+      vscode.window.setStatusBarMessage(
+        `Agent Cockpit: Ran scheduled job "${job.name}"`,
+        4000
+      );
+      await this.refreshWebviewState();
+      return;
+    }
+
+    await this.spawnSession({
+      title: `⏰ ${job.name}`,
+      badge: job.badge,
+      color: job.color,
+      command: job.command,
+      args: job.args,
+      cwd: job.cwd || this._currentCwd,
+      location: this._defaultLocation,
+    });
+
+    const spawned = this._sessions[this._sessions.length - 1];
+    if (spawned) {
+      job.lastSessionId = spawned.id;
+      this._persistJobs();
+      const delayMs = isShell ? 700 : 2800;
+      if (job.prompt.trim()) {
+        setTimeout(() => {
+          if (spawned.terminal && isTerminalAlive(spawned.terminal)) {
+            spawned.terminal.show(false);
+            spawned.terminal.sendText(job.prompt.trim(), true);
+          }
+        }, delayMs);
+      }
+    }
+
+    vscode.window.setStatusBarMessage(
+      `Agent Cockpit: Started scheduled job "${job.name}"`,
+      4000
+    );
+    await this.refreshWebviewState();
+  }
+
+  public async promptCreateScheduledJob() {
+    const name = await vscode.window.showInputBox({
+      title: "New Scheduled Job (1/4)",
+      prompt: "Job Name",
+      placeHolder: "e.g., Morning PR Summary, Run Unit Tests, Check Logs",
+    });
+    if (!name || !name.trim()) return;
+
+    const installed = getInstalledPresets();
+    const cliPick = await vscode.window.showQuickPick(
+      installed.map((p) => ({
+        label: p.label,
+        description: p.command,
+        preset: p,
+      })),
+      {
+        title: "New Scheduled Job (2/4)",
+        placeHolder: "Select CLI to run this scheduled job",
+      }
+    );
+    if (!cliPick) return;
+
+    const prompt = await vscode.window.showInputBox({
+      title: "New Scheduled Job (3/4)",
+      prompt: `Prompt or command to send to ${cliPick.preset.label}`,
+      placeHolder:
+        cliPick.preset.id === "powershell" || cliPick.preset.id === "cmd"
+          ? "e.g., npm test"
+          : "e.g., Review git status and summarize today's changes",
+    });
+    if (!prompt || !prompt.trim()) return;
+
+    const schedPick = await vscode.window.showQuickPick(
+      [
+        { label: "Every 15 minutes", scheduleType: "interval" as const, intervalMinutes: 15 },
+        { label: "Every 30 minutes", scheduleType: "interval" as const, intervalMinutes: 30 },
+        { label: "Every 1 hour", scheduleType: "interval" as const, intervalMinutes: 60 },
+        { label: "Every 5 minutes (testing)", scheduleType: "interval" as const, intervalMinutes: 5 },
+        { label: "Daily at specific time (HH:MM)", scheduleType: "daily" as const },
+        { label: "Weekdays (Mon–Fri) at specific time (HH:MM)", scheduleType: "weekdays" as const },
+      ],
+      {
+        title: "New Scheduled Job (4/4)",
+        placeHolder: "Choose schedule frequency",
+      }
+    );
+    if (!schedPick) return;
+
+    let dailyTime: string | undefined;
+    if (schedPick.scheduleType === "daily" || schedPick.scheduleType === "weekdays") {
+      const timeInput = await vscode.window.showInputBox({
+        title: "Scheduled Time (24-hour HH:MM)",
+        prompt: "Enter time in 24-hour format (e.g. 09:00, 14:30, 18:00)",
+        value: "09:00",
+        validateInput: (v) =>
+          /^\d{1,2}:\d{2}$/.test(v.trim()) ? null : "Use HH:MM format (e.g. 09:00)",
+      });
+      if (!timeInput) return;
+      dailyTime = timeInput.trim();
+    }
+
+    const p = cliPick.preset;
+    const rawCmd = p.command.trim().toLowerCase();
+    let cliName = path.basename(rawCmd, path.extname(rawCmd)) || "cli";
+    if (cliName === "powershell") cliName = "ps1";
+
+    const newJob: ScheduledJob = {
+      id: `job-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: name.trim(),
+      cliId: p.id,
+      cliName,
+      command: p.command,
+      args: p.args,
+      badge: p.badge,
+      color: p.color,
+      cwd: this._currentCwd,
+      prompt: prompt.trim(),
+      scheduleType: schedPick.scheduleType,
+      intervalMinutes: schedPick.intervalMinutes,
+      dailyTime,
+      enabled: true,
+      nextRunAt: computeNextRunAt(
+        {
+          scheduleType: schedPick.scheduleType,
+          intervalMinutes: schedPick.intervalMinutes,
+          dailyTime,
+        },
+        Date.now()
+      ),
+    };
+
+    this._jobs.push(newJob);
+    this._persistJobs();
+    await this.refreshWebviewState();
+    vscode.window.setStatusBarMessage(
+      `Agent Cockpit: Scheduled "${newJob.name}" (${formatScheduleLabel(newJob)})`,
+      4000
+    );
+  }
+
   private _persistSessions() {
     // Keep pinned sessions sorted at the top
     this._sessions.sort((a, b) => {
@@ -1798,6 +2063,37 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           await this.handoffSessionToTarget(
             typeof msg.id === "string" ? msg.id : undefined
           );
+          break;
+        case "createScheduledJob":
+          await this.promptCreateScheduledJob();
+          break;
+        case "toggleScheduledJob":
+          if (typeof msg.id === "string") {
+            const job = this._jobs.find((j) => j.id === msg.id);
+            if (job) {
+              job.enabled = !job.enabled;
+              if (job.enabled) {
+                job.nextRunAt = computeNextRunAt(job, Date.now());
+              }
+              this._persistJobs();
+              await this.refreshWebviewState();
+            }
+          }
+          break;
+        case "runScheduledJobNow":
+          if (typeof msg.id === "string") {
+            const job = this._jobs.find((j) => j.id === msg.id);
+            if (job) {
+              void this._executeScheduledJob(job);
+            }
+          }
+          break;
+        case "deleteScheduledJob":
+          if (typeof msg.id === "string") {
+            this._jobs = this._jobs.filter((j) => j.id !== msg.id);
+            this._persistJobs();
+            await this.refreshWebviewState();
+          }
           break;
         case "refreshGit":
           this._syncCliStoredSessionNames();
@@ -2654,6 +2950,27 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       gitChanges: gitInfo.changes,
       mcpServers,
       skillsAndAgents,
+      scheduledJobs: this._jobs.map((j) => ({
+        id: j.id,
+        name: j.name,
+        cliName: j.cliName,
+        color: j.color,
+        prompt: j.prompt,
+        scheduleLabel: formatScheduleLabel(j),
+        enabled: j.enabled,
+        nextRunText: j.enabled
+          ? new Date(j.nextRunAt).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : "Paused",
+        lastRunText: j.lastRunAt
+          ? new Date(j.lastRunAt).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : "Never",
+      })),
       aiSnippets: activeSnippets,
       handoffContent,
       sessions: this._sessions.map((s, idx) => {
@@ -3221,7 +3538,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     }
     .footer-tabs {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 4px;
     }
     .footer-btn {
@@ -3344,10 +3661,12 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   <div class="footer-bar">
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
+    <div id="jobs-drawer" class="drawer-pane"></div>
 
     <div class="footer-tabs">
       <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
       <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
+      <button id="tab-jobs" class="footer-btn" title="Manage automated scheduled CLI jobs">Jobs (<span id="jobs-count">0</span>)</button>
     </div>
   </div>
 
@@ -3408,12 +3727,15 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
     const mcpDrawer = document.getElementById("mcp-drawer");
     const skillsDrawer = document.getElementById("skills-drawer");
+    const jobsDrawer = document.getElementById("jobs-drawer");
 
     const mcpCount = document.getElementById("mcp-count");
     const skillsCount = document.getElementById("skills-count");
+    const jobsCount = document.getElementById("jobs-count");
 
     const tabMcp = document.getElementById("tab-mcp");
     const tabSkills = document.getElementById("tab-skills");
+    const tabJobs = document.getElementById("tab-jobs");
 
     const COLOR_PALETTE = [
       "#3b82f6",
@@ -3428,9 +3750,11 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       state.activeFooter = state.activeFooter === which ? null : which;
       mcpDrawer.classList.toggle("open", state.activeFooter === "mcp");
       skillsDrawer.classList.toggle("open", state.activeFooter === "skills");
+      jobsDrawer.classList.toggle("open", state.activeFooter === "jobs");
 
       tabMcp.classList.toggle("active", state.activeFooter === "mcp");
       tabSkills.classList.toggle("active", state.activeFooter === "skills");
+      tabJobs.classList.toggle("active", state.activeFooter === "jobs");
 
       if (state.activeFooter === "mcp") {
         vscode.postMessage({ type: "refreshGit" });
@@ -3439,6 +3763,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
     tabMcp.addEventListener("click", () => setFooterDrawer("mcp"));
     tabSkills.addEventListener("click", () => setFooterDrawer("skills"));
+    tabJobs.addEventListener("click", () => setFooterDrawer("jobs"));
 
     cwdPill.addEventListener("click", () => {
       vscode.postMessage({ type: "browseCwd" });
@@ -3795,6 +4120,61 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             vscode.postMessage({ type: "useSkillOrAgent", name: sk.name, kind: sk.kind });
           });
           skillsDrawer.appendChild(r);
+        });
+      }
+
+      // Render Automated Scheduled Jobs
+      const jobs = msg.scheduledJobs || [];
+      jobsCount.textContent = String(jobs.length);
+      jobsDrawer.innerHTML = "";
+
+      const addJobBtn = document.createElement("button");
+      addJobBtn.className = "send-btn";
+      addJobBtn.style.padding = "5px 8px";
+      addJobBtn.style.width = "100%";
+      addJobBtn.textContent = "+ New Scheduled Job";
+      addJobBtn.addEventListener("click", () => {
+        vscode.postMessage({ type: "createScheduledJob" });
+      });
+      jobsDrawer.appendChild(addJobBtn);
+
+      if (jobs.length === 0) {
+        const emptyEl = document.createElement("div");
+        emptyEl.style.cssText = "color:var(--md-muted);text-align:center;padding:6px 0;font-size:10.5px;";
+        emptyEl.textContent = "No scheduled jobs yet — runs while IDE is open";
+        jobsDrawer.appendChild(emptyEl);
+      } else {
+        jobs.forEach((j) => {
+          const r = document.createElement("div");
+          r.className = "item-row";
+          r.title =
+            "CLI: " +
+            j.cliName +
+            " · Schedule: " +
+            j.scheduleLabel +
+            " · Next: " +
+            j.nextRunText +
+            " · Last: " +
+            j.lastRunText +
+            "\nPrompt: " +
+            j.prompt;
+          r.innerHTML =
+            '<span class="status-led ' + (j.enabled ? "led-working" : "led-stopped") + '"></span>' +
+            '<span class="item-title">' + j.name + '</span>' +
+            '<span class="scope-pill">' + j.cliName + ' · ' + j.scheduleLabel + '</span>' +
+            '<button class="icon-action job-run" title="Run now">▶</button>' +
+            '<button class="icon-action job-toggle" title="' + (j.enabled ? "Pause job" : "Resume job") + '">' + (j.enabled ? "⏸" : "↻") + '</button>' +
+            '<button class="icon-action danger job-del" title="Delete job">✕</button>';
+          r.querySelector(".job-run").addEventListener("click", () => {
+            vscode.postMessage({ type: "runScheduledJobNow", id: j.id });
+          });
+          r.querySelector(".job-toggle").addEventListener("click", () => {
+            vscode.postMessage({ type: "toggleScheduledJob", id: j.id });
+          });
+          r.querySelector(".job-del").addEventListener("click", () => {
+            vscode.postMessage({ type: "deleteScheduledJob", id: j.id });
+          });
+          jobsDrawer.appendChild(r);
         });
       }
     });
