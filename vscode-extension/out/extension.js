@@ -38,6 +38,8 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const crypto = __importStar(require("crypto"));
 const child_process_1 = require("child_process");
 const DEFAULT_PRESETS = [
     {
@@ -73,13 +75,127 @@ const DEFAULT_PRESETS = [
         args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
     },
 ];
-const STORAGE_KEY = "agentCockpit.retainedSessions.v1";
+const STORAGE_KEY = "agentCockpit.retainedSessions.v2";
 function isTerminalAlive(term) {
     if (!term)
         return false;
     if (term.exitStatus !== undefined)
         return false;
     return vscode.window.terminals.includes(term);
+}
+function claudeProjectSlug(cwd) {
+    return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+function parseClaudeJsonlMeta(filePath) {
+    const sessionId = path.basename(filePath, ".jsonl");
+    let customTitle = null;
+    let firstUserPrompt = null;
+    let detectedCwd = null;
+    try {
+        const content = fs.readFileSync(filePath, "utf8");
+        const lines = content.split(/\r?\n/);
+        for (const line of lines) {
+            if (!line.trim())
+                continue;
+            try {
+                const obj = JSON.parse(line);
+                if (!detectedCwd && typeof obj.cwd === "string") {
+                    detectedCwd = obj.cwd;
+                }
+                if (obj.type === "custom-title" &&
+                    typeof obj.customTitle === "string" &&
+                    obj.customTitle.trim()) {
+                    customTitle = obj.customTitle.trim();
+                }
+                else if (obj.type === "summary" &&
+                    typeof obj.summary === "string" &&
+                    obj.summary.trim()) {
+                    customTitle = obj.summary.trim();
+                }
+                else if (typeof obj.sessionName === "string" &&
+                    obj.sessionName.trim()) {
+                    customTitle = obj.sessionName.trim();
+                }
+                else if (!firstUserPrompt &&
+                    obj.type === "user" &&
+                    obj.message &&
+                    obj.message.role === "user") {
+                    const rawContent = obj.message.content;
+                    if (typeof rawContent === "string" && rawContent.trim()) {
+                        firstUserPrompt = rawContent.trim();
+                    }
+                    else if (Array.isArray(rawContent)) {
+                        const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
+                        if (textPart && textPart.text.trim()) {
+                            firstUserPrompt = textPart.text.trim();
+                        }
+                    }
+                }
+            }
+            catch {
+                // skip malformed line
+            }
+        }
+    }
+    catch {
+        // ignore read error
+    }
+    const chosen = customTitle || firstUserPrompt;
+    const cleaned = chosen
+        ? chosen.replace(/\s+/g, " ").trim().slice(0, 32)
+        : null;
+    return {
+        sessionId,
+        title: cleaned,
+        cwd: detectedCwd,
+    };
+}
+function discoverClaudeSessionsForCwd(cwd) {
+    const results = [];
+    const home = os.homedir();
+    const projectsRoot = path.join(home, ".claude", "projects");
+    if (!fs.existsSync(projectsRoot))
+        return results;
+    const targetSlug = claudeProjectSlug(cwd).toLowerCase();
+    let dirs = [];
+    try {
+        dirs = fs.readdirSync(projectsRoot);
+    }
+    catch {
+        return results;
+    }
+    for (const dirName of dirs) {
+        if (dirName.toLowerCase() !== targetSlug)
+            continue;
+        const fullDir = path.join(projectsRoot, dirName);
+        let files = [];
+        try {
+            files = fs.readdirSync(fullDir).filter((f) => f.endsWith(".jsonl"));
+        }
+        catch {
+            continue;
+        }
+        for (const file of files) {
+            const fullPath = path.join(fullDir, file);
+            try {
+                const stat = fs.statSync(fullPath);
+                const meta = parseClaudeJsonlMeta(fullPath);
+                if (meta.title) {
+                    results.push({
+                        cliSessionId: meta.sessionId,
+                        title: meta.title,
+                        cwd: meta.cwd || cwd,
+                        mtimeMs: stat.mtimeMs,
+                        agentType: "claude",
+                    });
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    return results.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 function summarizeFirstLine(raw, label) {
     const firstLine = raw
@@ -95,13 +211,13 @@ function summarizeFirstLine(raw, label) {
         lower === "gemini" ||
         lower === "powershell" ||
         lower === "powershell.exe" ||
-        lower.startsWith("claude --continue") ||
-        lower.startsWith("agy --resume") ||
-        lower.startsWith("gemini --resume") ||
-        lower.startsWith("codex resume")) {
+        lower.startsWith("claude ") ||
+        lower.startsWith("agy ") ||
+        lower.startsWith("gemini ") ||
+        lower.startsWith("codex ")) {
         return null;
     }
-    const cleaned = firstLine.replace(/\s+/g, " ").slice(0, 26);
+    const cleaned = firstLine.replace(/\s+/g, " ").slice(0, 28);
     const baseLabel = label.split("·")[0].trim();
     return `${baseLabel} · ${cleaned}`;
 }
@@ -116,10 +232,14 @@ function execGit(cwd, args) {
         });
     });
 }
-function buildShellLaunch(cmd, args, isResume) {
-    const trimmed = cmd.trim();
+function buildShellLaunch(session, isResume) {
+    const trimmed = session.command.trim();
     const lower = trimmed.toLowerCase();
-    const extraArgs = args.length > 0 ? ` ${args.join(" ")}` : "";
+    const extraArgs = session.args.length > 0 ? ` ${session.args.join(" ")}` : "";
+    const sessionId = session.cliSessionId;
+    const safeName = (session.cliSessionName || session.title || "")
+        .replace(/"/g, "")
+        .trim();
     if (lower === "powershell.exe" || lower === "powershell") {
         return {
             shellPath: "powershell.exe",
@@ -129,29 +249,53 @@ function buildShellLaunch(cmd, args, isResume) {
     if (lower === "cmd.exe" || lower === "cmd") {
         return { shellPath: "cmd.exe", shellArgs: [] };
     }
-    if (isResume) {
-        if (lower === "claude" || lower === "claude.exe") {
+    // Claude Code: bind exact session UUID & session name so it can be resumed by ID or name
+    if (lower === "claude" || lower === "claude.exe") {
+        const nameArg = session.hasCustomTitle && safeName ? ` -n "${safeName}"` : "";
+        if (isResume) {
+            const targetKey = session.cliSessionName || sessionId;
+            if (targetKey) {
+                return {
+                    shellPath: "powershell.exe",
+                    shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+                    initialCommand: `claude --resume "${targetKey}"${nameArg}${extraArgs}; if ($LASTEXITCODE -ne 0) { claude --continue${nameArg}${extraArgs} }; if ($LASTEXITCODE -ne 0) { claude${sessionId ? ` --session-id ${sessionId}` : ""}${nameArg}${extraArgs} }`,
+                };
+            }
             return {
                 shellPath: "powershell.exe",
                 shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-                initialCommand: `claude --continue${extraArgs}; if ($LASTEXITCODE -ne 0) { claude${extraArgs} }`,
+                initialCommand: `claude --continue${nameArg}${extraArgs}; if ($LASTEXITCODE -ne 0) { claude${extraArgs} }`,
             };
         }
-        if (lower === "agy" || lower === "agy.cmd" || lower === "agy.exe") {
+        return {
+            shellPath: "powershell.exe",
+            shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+            initialCommand: `claude${sessionId ? ` --session-id ${sessionId}` : ""}${nameArg}${extraArgs}`,
+        };
+    }
+    // Antigravity (agy) / Gemini CLI: bind exact session UUID and resume by ID
+    if (lower === "agy" ||
+        lower === "agy.cmd" ||
+        lower === "agy.exe" ||
+        lower === "gemini" ||
+        lower === "gemini.cmd") {
+        const bin = lower.startsWith("gemini") ? "gemini" : "agy";
+        if (isResume) {
+            const resumeTarget = sessionId || "latest";
             return {
                 shellPath: "powershell.exe",
                 shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-                initialCommand: `agy --resume latest${extraArgs}; if ($LASTEXITCODE -ne 0) { agy${extraArgs} }`,
+                initialCommand: `${bin} --resume ${resumeTarget}${extraArgs}; if ($LASTEXITCODE -ne 0) { ${bin} --resume latest${extraArgs} }; if ($LASTEXITCODE -ne 0) { ${bin}${extraArgs} }`,
             };
         }
-        if (lower === "gemini" || lower === "gemini.cmd") {
-            return {
-                shellPath: "powershell.exe",
-                shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-                initialCommand: `gemini --resume latest${extraArgs}; if ($LASTEXITCODE -ne 0) { gemini${extraArgs} }`,
-            };
-        }
-        if (lower === "codex" || lower === "codex.cmd") {
+        return {
+            shellPath: "powershell.exe",
+            shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+            initialCommand: `${bin}${extraArgs}`,
+        };
+    }
+    if (lower === "codex" || lower === "codex.cmd") {
+        if (isResume) {
             return {
                 shellPath: "powershell.exe",
                 shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
@@ -173,6 +317,7 @@ class AgentCockpitProvider {
     _activeSessionId = null;
     _currentCwd;
     _defaultLocation = "editor";
+    _pollTimer;
     constructor(_context) {
         this._context = _context;
         const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -180,12 +325,24 @@ class AgentCockpitProvider {
         const saved = this._context.globalState.get(STORAGE_KEY) || [];
         this._sessions = saved.map((meta) => ({
             ...meta,
+            cliSessionId: meta.cliSessionId || crypto.randomUUID(),
             status: "stopped",
             terminal: undefined,
         }));
+        // Auto-discover any existing CLI sessions stored on disk for this workspace
+        this._syncCliStoredSessionNames();
         if (this._sessions.length > 0) {
             this._activeSessionId = this._sessions[this._sessions.length - 1].id;
         }
+        // Periodically sync stored CLI session names from disk (~/.claude/projects/...)
+        this._pollTimer = setInterval(() => {
+            if (this._syncCliStoredSessionNames()) {
+                void this.refreshWebviewState();
+            }
+        }, 3000);
+        this._context.subscriptions.push({
+            dispose: () => clearInterval(this._pollTimer),
+        });
         vscode.window.onDidCloseTerminal((closedTerm) => {
             let changed = false;
             for (const s of this._sessions) {
@@ -197,6 +354,7 @@ class AgentCockpitProvider {
                     }
                 }
             }
+            this._syncCliStoredSessionNames();
             if (changed) {
                 this._persistSessions();
                 void this.refreshWebviewState();
@@ -216,15 +374,85 @@ class AgentCockpitProvider {
         if (typeof winAny.onDidStartTerminalShellExecution === "function") {
             this._context.subscriptions.push(winAny.onDidStartTerminalShellExecution((e) => {
                 const sess = this._sessions.find((s) => s.terminal === e.terminal);
-                if (!sess || sess.hasCustomTitle)
+                if (!sess || sess.userRenamed)
                     return;
                 const cmdValue = e.execution?.commandLine?.value || "";
                 const autoTitle = summarizeFirstLine(cmdValue, sess.title);
                 if (autoTitle) {
-                    void this.renameSession(sess.id, autoTitle);
+                    void this.renameSession(sess.id, autoTitle, false);
                 }
             }));
         }
+    }
+    /**
+     * Reads stored CLI session files (e.g. ~/.claude/projects/<slug>/<sessionId>.jsonl)
+     * to automatically sync session names stored by the CLI and import existing CLI sessions.
+     */
+    _syncCliStoredSessionNames() {
+        let changed = false;
+        const cwdsToScan = new Set([this._currentCwd]);
+        for (const s of this._sessions) {
+            if (s.cwd)
+                cwdsToScan.add(s.cwd);
+        }
+        for (const cwd of cwdsToScan) {
+            const discovered = discoverClaudeSessionsForCwd(cwd);
+            for (const disc of discovered) {
+                // 1. Check if we already have a session bound to this cliSessionId
+                let match = this._sessions.find((s) => s.cliSessionId === disc.cliSessionId);
+                // 2. If not, bind to an unbound running Claude session in the same cwd
+                if (!match) {
+                    match = this._sessions.find((s) => s.command.toLowerCase().startsWith("claude") &&
+                        s.cwd.toLowerCase() === cwd.toLowerCase() &&
+                        !discovered.some((d) => d.cliSessionId === s.cliSessionId));
+                    if (match) {
+                        match.cliSessionId = disc.cliSessionId;
+                        changed = true;
+                    }
+                }
+                if (match) {
+                    match.cliSessionName = disc.title;
+                    if (!match.userRenamed && match.title !== disc.title) {
+                        match.title = disc.title;
+                        match.hasCustomTitle = true;
+                        changed = true;
+                        if (isTerminalAlive(match.terminal)) {
+                            void vscode.commands
+                                .executeCommand("workbench.action.terminal.renameWithArg", {
+                                name: disc.title,
+                            })
+                                .then(undefined, () => { });
+                        }
+                    }
+                }
+                else {
+                    // 3. Import existing CLI-stored session for this workspace so it shows in the left pane!
+                    const imported = {
+                        id: `sess-cli-${disc.cliSessionId.slice(0, 8)}`,
+                        cliSessionId: disc.cliSessionId,
+                        cliSessionName: disc.title,
+                        title: disc.title,
+                        badge: "C",
+                        color: "#d97757",
+                        command: "claude",
+                        args: [],
+                        cwd: disc.cwd,
+                        hasCustomTitle: true,
+                        userRenamed: false,
+                        location: this._defaultLocation,
+                        status: "stopped",
+                        terminal: undefined,
+                        createdAt: disc.mtimeMs,
+                    };
+                    this._sessions.push(imported);
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            this._persistSessions();
+        }
+        return changed;
     }
     _syncLiveness() {
         for (const s of this._sessions) {
@@ -240,6 +468,8 @@ class AgentCockpitProvider {
     _persistSessions() {
         const serializable = this._sessions.map((s) => ({
             id: s.id,
+            cliSessionId: s.cliSessionId,
+            cliSessionName: s.cliSessionName,
             title: s.title,
             badge: s.badge,
             color: s.color,
@@ -249,6 +479,7 @@ class AgentCockpitProvider {
             branch: s.branch,
             isWorktree: s.isWorktree,
             hasCustomTitle: s.hasCustomTitle,
+            userRenamed: s.userRenamed,
             location: s.location,
             createdAt: s.createdAt,
         }));
@@ -263,6 +494,7 @@ class AgentCockpitProvider {
         webviewView.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.type) {
                 case "ready":
+                    this._syncCliStoredSessionNames();
                     await this.refreshWebviewState();
                     break;
                 case "browseCwd":
@@ -294,7 +526,7 @@ class AgentCockpitProvider {
                     break;
                 case "renameSession":
                     if (typeof msg.id === "string" && typeof msg.title === "string") {
-                        await this.renameSession(msg.id, msg.title);
+                        await this.renameSession(msg.id, msg.title, true);
                     }
                     break;
                 case "sendQuickPrompt":
@@ -322,6 +554,7 @@ class AgentCockpitProvider {
                     await this.sendTextToActiveAgent("Read .agent/handoff.md and continue.", false);
                     break;
                 case "refreshGit":
+                    this._syncCliStoredSessionNames();
                     await this.refreshWebviewState();
                     break;
             }
@@ -337,19 +570,20 @@ class AgentCockpitProvider {
         });
         if (picked && picked.length > 0) {
             this._currentCwd = picked[0].fsPath;
+            this._syncCliStoredSessionNames();
             await this.refreshWebviewState();
         }
     }
-    _createVsTerminalForSession(title, command, args, cwd, location, isResume) {
-        const folderShort = path.basename(cwd) || cwd;
-        const termName = `${title} · ${folderShort}`;
-        const resolved = buildShellLaunch(command, args, isResume);
-        const terminalLocation = location === "editor"
+    _createVsTerminalForSession(session, isResume) {
+        const folderShort = path.basename(session.cwd) || session.cwd;
+        const termName = `${session.title} · ${folderShort}`;
+        const resolved = buildShellLaunch(session, isResume);
+        const terminalLocation = session.location === "editor"
             ? vscode.TerminalLocation.Editor
             : vscode.TerminalLocation.Panel;
         const terminal = vscode.window.createTerminal({
             name: termName,
-            cwd,
+            cwd: session.cwd,
             shellPath: resolved.shellPath,
             shellArgs: resolved.shellArgs,
             location: terminalLocation,
@@ -401,12 +635,13 @@ class AgentCockpitProvider {
         catch {
             branch = undefined;
         }
-        const terminal = this._createVsTerminalForSession(params.title, params.command, params.args, targetCwd, params.location, false);
         const id = `sess-${Date.now().toString(36)}-${Math.random()
             .toString(36)
             .slice(2, 6)}`;
+        const cliSessionId = crypto.randomUUID();
         const session = {
             id,
+            cliSessionId,
             title: params.title,
             badge: params.badge,
             color: params.color,
@@ -416,18 +651,19 @@ class AgentCockpitProvider {
             branch,
             isWorktree,
             hasCustomTitle: false,
+            userRenamed: false,
             location: params.location,
             status: "running",
-            terminal,
             createdAt: Date.now(),
         };
+        session.terminal = this._createVsTerminalForSession(session, false);
         this._sessions.push(session);
         this._activeSessionId = id;
         this._currentCwd = targetCwd;
         this._persistSessions();
         await this.refreshWebviewState();
     }
-    async renameSession(id, newTitleRaw) {
+    async renameSession(id, newTitleRaw, userInitiated = true) {
         const trimmed = newTitleRaw.trim();
         if (!trimmed)
             return;
@@ -436,6 +672,10 @@ class AgentCockpitProvider {
             return;
         found.title = trimmed;
         found.hasCustomTitle = true;
+        if (userInitiated) {
+            found.userRenamed = true;
+            found.cliSessionName = trimmed;
+        }
         this._persistSessions();
         if (isTerminalAlive(found.terminal)) {
             try {
@@ -459,7 +699,7 @@ class AgentCockpitProvider {
             value: found.title,
         });
         if (input && input.trim()) {
-            await this.renameSession(found.id, input.trim());
+            await this.renameSession(found.id, input.trim(), true);
         }
     }
     async sendQuickPromptToActiveAgent(promptText) {
@@ -468,7 +708,7 @@ class AgentCockpitProvider {
         if (active && !active.hasCustomTitle) {
             const autoTitle = summarizeFirstLine(promptText, active.title);
             if (autoTitle) {
-                await this.renameSession(active.id, autoTitle);
+                await this.renameSession(active.id, autoTitle, false);
             }
         }
         await this.sendTextToActiveAgent(promptText, true);
@@ -505,8 +745,12 @@ class AgentCockpitProvider {
                 // ignore
             }
         }
+        if (!found.cliSessionId) {
+            found.cliSessionId = crypto.randomUUID();
+        }
         const cwd = fs.existsSync(found.cwd) ? found.cwd : this._currentCwd;
-        found.terminal = this._createVsTerminalForSession(found.title, found.command, found.args, cwd, found.location || this._defaultLocation, isResume);
+        found.cwd = cwd;
+        found.terminal = this._createVsTerminalForSession(found, isResume);
         found.status = "running";
         this._activeSessionId = found.id;
         this._currentCwd = cwd;
@@ -555,7 +799,7 @@ class AgentCockpitProvider {
         if (!active.hasCustomTitle) {
             const autoTitle = summarizeFirstLine(text, active.title);
             if (autoTitle) {
-                await this.renameSession(active.id, autoTitle);
+                await this.renameSession(active.id, autoTitle, false);
             }
         }
         active.terminal?.show(false);
@@ -669,6 +913,7 @@ class AgentCockpitProvider {
             handoffContent,
             sessions: this._sessions.map((s, idx) => ({
                 id: s.id,
+                cliSessionId: s.cliSessionId,
                 index: idx + 1,
                 title: s.title,
                 badge: s.badge,
@@ -1335,7 +1580,7 @@ class AgentCockpitProvider {
             (s.id === msg.activeSessionId ? " active" : "") +
             (isStopped ? " stopped" : "");
           card.title = isStopped
-            ? "Terminal closed — Click anywhere on card to resume session"
+            ? "Terminal closed — Click to resume CLI session (" + (s.cliSessionId ? s.cliSessionId.slice(0, 8) : s.title) + ")"
             : "Running — Click to focus · Double-click title to rename";
           card.innerHTML =
             '<span class="agent-dot" style="background:' + (s.color || "#1a73e8") + ';">' +
