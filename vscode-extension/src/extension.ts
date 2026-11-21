@@ -85,7 +85,7 @@ interface DiscoveredCliSession {
   agentType: "claude" | "agy";
 }
 
-const STORAGE_KEY = "agentCockpit.retainedSessions.v2";
+const STORAGE_KEY = "agentCockpit.retainedSessions.v3";
 
 function isTerminalAlive(term?: vscode.Terminal): term is vscode.Terminal {
   if (!term) return false;
@@ -95,6 +95,109 @@ function isTerminalAlive(term?: vscode.Terminal): term is vscode.Terminal {
 
 function claudeProjectSlug(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+/**
+ * Discover Antigravity CLI (agy) stored conversations from:
+ * - ~/.gemini/antigravity-cli/annotations/<conversation-id>.pbtxt (title:"...")
+ * - ~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl
+ */
+function discoverAgySessions(defaultCwd: string): DiscoveredCliSession[] {
+  const results: DiscoveredCliSession[] = [];
+  const home = os.homedir();
+  const agyRoot = path.join(home, ".gemini", "antigravity-cli");
+  const annotationsDir = path.join(agyRoot, "annotations");
+  const brainDir = path.join(agyRoot, "brain");
+
+  const ids = new Set<string>();
+  if (fs.existsSync(annotationsDir)) {
+    try {
+      for (const f of fs.readdirSync(annotationsDir)) {
+        if (f.endsWith(".pbtxt")) {
+          ids.add(path.basename(f, ".pbtxt"));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (fs.existsSync(brainDir)) {
+    try {
+      for (const d of fs.readdirSync(brainDir)) {
+        if (/^[0-9a-fA-F-]{32,36}$/.test(d)) {
+          ids.add(d);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const convId of ids) {
+    let title: string | null = null;
+    let mtimeMs = 0;
+
+    const pbtxtPath = path.join(annotationsDir, `${convId}.pbtxt`);
+    if (fs.existsSync(pbtxtPath)) {
+      try {
+        const stat = fs.statSync(pbtxtPath);
+        mtimeMs = Math.max(mtimeMs, stat.mtimeMs);
+        const raw = fs.readFileSync(pbtxtPath, "utf8");
+        const match = raw.match(/title:\s*"([^"]+)"/);
+        if (match && match[1].trim()) {
+          title = match[1].trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const transcriptPath = path.join(
+      brainDir,
+      convId,
+      ".system_generated",
+      "logs",
+      "transcript.jsonl"
+    );
+    if (fs.existsSync(transcriptPath)) {
+      try {
+        const stat = fs.statSync(transcriptPath);
+        mtimeMs = Math.max(mtimeMs, stat.mtimeMs);
+        if (!title) {
+          const content = fs.readFileSync(transcriptPath, "utf8");
+          const firstLine = content.split(/\r?\n/).find((l) => l.trim());
+          if (firstLine) {
+            const obj = JSON.parse(firstLine);
+            if (typeof obj.content === "string") {
+              const reqMatch = obj.content.match(
+                /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/
+              );
+              const candidate = (
+                reqMatch ? reqMatch[1] : obj.content
+              ).trim();
+              if (candidate) {
+                title = candidate.replace(/\s+/g, " ").slice(0, 32);
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (title) {
+      results.push({
+        cliSessionId: convId,
+        title,
+        cwd: defaultCwd,
+        mtimeMs: mtimeMs || Date.now(),
+        agentType: "agy",
+      });
+    }
+  }
+
+  return results.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
 function parseClaudeJsonlMeta(filePath: string): {
@@ -158,7 +261,7 @@ function parseClaudeJsonlMeta(filePath: string): {
       }
     }
   } catch {
-    // ignore read error
+    // ignore
   }
 
   const chosen = customTitle || firstUserPrompt;
@@ -286,12 +389,35 @@ function buildShellLaunch(
     return { shellPath: "cmd.exe", shellArgs: [] };
   }
 
-  // Claude Code: bind exact session UUID & session name so it can be resumed by ID or name
+  // 1. Antigravity CLI (agy.exe): uses --conversation <id> or --continue (-c)
+  if (lower === "agy" || lower === "agy.cmd" || lower === "agy.exe") {
+    if (isResume) {
+      if (sessionId) {
+        return {
+          shellPath: "powershell.exe",
+          shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+          initialCommand: `agy --conversation ${sessionId}${extraArgs}; if ($LASTEXITCODE -ne 0) { agy --continue${extraArgs} }; if ($LASTEXITCODE -ne 0) { agy${extraArgs} }`,
+        };
+      }
+      return {
+        shellPath: "powershell.exe",
+        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        initialCommand: `agy --continue${extraArgs}; if ($LASTEXITCODE -ne 0) { agy${extraArgs} }`,
+      };
+    }
+    return {
+      shellPath: "powershell.exe",
+      shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+      initialCommand: `agy${extraArgs}`,
+    };
+  }
+
+  // 2. Claude Code (claude.exe): uses --session-id <uuid>, --resume <id|name>, --continue (-c), -n <name>
   if (lower === "claude" || lower === "claude.exe") {
     const nameArg =
       session.hasCustomTitle && safeName ? ` -n "${safeName}"` : "";
     if (isResume) {
-      const targetKey = session.cliSessionName || sessionId;
+      const targetKey = sessionId || session.cliSessionName;
       if (targetKey) {
         return {
           shellPath: "powershell.exe",
@@ -317,30 +443,24 @@ function buildShellLaunch(
     };
   }
 
-  // Antigravity (agy) / Gemini CLI: bind exact session UUID and resume by ID
-  if (
-    lower === "agy" ||
-    lower === "agy.cmd" ||
-    lower === "agy.exe" ||
-    lower === "gemini" ||
-    lower === "gemini.cmd"
-  ) {
-    const bin = lower.startsWith("gemini") ? "gemini" : "agy";
+  // 3. Gemini CLI (gemini.cmd): uses --resume <id|latest>
+  if (lower === "gemini" || lower === "gemini.cmd") {
     if (isResume) {
       const resumeTarget = sessionId || "latest";
       return {
         shellPath: "powershell.exe",
         shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-        initialCommand: `${bin} --resume ${resumeTarget}${extraArgs}; if ($LASTEXITCODE -ne 0) { ${bin} --resume latest${extraArgs} }; if ($LASTEXITCODE -ne 0) { ${bin}${extraArgs} }`,
+        initialCommand: `gemini --resume ${resumeTarget}${extraArgs}; if ($LASTEXITCODE -ne 0) { gemini --resume latest${extraArgs} }; if ($LASTEXITCODE -ne 0) { gemini${extraArgs} }`,
       };
     }
     return {
       shellPath: "powershell.exe",
       shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-      initialCommand: `${bin}${extraArgs}`,
+      initialCommand: `gemini${extraArgs}`,
     };
   }
 
+  // 4. Codex CLI: uses codex resume --last
   if (lower === "codex" || lower === "codex.cmd") {
     if (isResume) {
       return {
@@ -376,19 +496,16 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       this._context.globalState.get<StoredSessionMeta[]>(STORAGE_KEY) || [];
     this._sessions = saved.map((meta) => ({
       ...meta,
-      cliSessionId: meta.cliSessionId || crypto.randomUUID(),
       status: "stopped",
       terminal: undefined,
     }));
 
-    // Auto-discover any existing CLI sessions stored on disk for this workspace
     this._syncCliStoredSessionNames();
 
     if (this._sessions.length > 0) {
       this._activeSessionId = this._sessions[this._sessions.length - 1].id;
     }
 
-    // Periodically sync stored CLI session names from disk (~/.claude/projects/...)
     this._pollTimer = setInterval(() => {
       if (this._syncCliStoredSessionNames()) {
         void this.refreshWebviewState();
@@ -451,11 +568,73 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Reads stored CLI session files (e.g. ~/.claude/projects/<slug>/<sessionId>.jsonl)
-   * to automatically sync session names stored by the CLI and import existing CLI sessions.
+   * Syncs stored CLI session IDs and titles from:
+   * 1. Antigravity CLI (~/.gemini/antigravity-cli/annotations/*.pbtxt & brain/*)
+   * 2. Claude Code (~/.claude/projects/<slug>/*.jsonl)
    */
   private _syncCliStoredSessionNames(): boolean {
     let changed = false;
+
+    // A. Sync Antigravity CLI (agy) conversations
+    const agyDiscovered = discoverAgySessions(this._currentCwd);
+    for (const disc of agyDiscovered) {
+      let match = this._sessions.find(
+        (s) => s.cliSessionId === disc.cliSessionId
+      );
+
+      // Bind to a newly spawned unbound running AGY session
+      if (!match) {
+        match = this._sessions.find(
+          (s) =>
+            s.command.toLowerCase().startsWith("agy") &&
+            !s.cliSessionId &&
+            Math.abs(disc.mtimeMs - s.createdAt) < 10 * 60 * 1000
+        );
+        if (match) {
+          match.cliSessionId = disc.cliSessionId;
+          changed = true;
+        }
+      }
+
+      if (match) {
+        match.cliSessionName = disc.title;
+        if (!match.userRenamed && match.title !== disc.title) {
+          match.title = disc.title;
+          match.hasCustomTitle = true;
+          changed = true;
+          if (isTerminalAlive(match.terminal)) {
+            void vscode.commands
+              .executeCommand("workbench.action.terminal.renameWithArg", {
+                name: disc.title,
+              })
+              .then(undefined, () => {});
+          }
+        }
+      } else {
+        // Import recent stored AGY conversation into left pane
+        const imported: CockpitSession = {
+          id: `sess-agy-${disc.cliSessionId.slice(0, 8)}`,
+          cliSessionId: disc.cliSessionId,
+          cliSessionName: disc.title,
+          title: disc.title,
+          badge: "✦",
+          color: "#1a73e8",
+          command: "agy",
+          args: [],
+          cwd: disc.cwd,
+          hasCustomTitle: true,
+          userRenamed: false,
+          location: this._defaultLocation,
+          status: "stopped",
+          terminal: undefined,
+          createdAt: disc.mtimeMs,
+        };
+        this._sessions.push(imported);
+        changed = true;
+      }
+    }
+
+    // B. Sync Claude Code sessions
     const cwdsToScan = new Set<string>([this._currentCwd]);
     for (const s of this._sessions) {
       if (s.cwd) cwdsToScan.add(s.cwd);
@@ -464,12 +643,10 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     for (const cwd of cwdsToScan) {
       const discovered = discoverClaudeSessionsForCwd(cwd);
       for (const disc of discovered) {
-        // 1. Check if we already have a session bound to this cliSessionId
         let match = this._sessions.find(
           (s) => s.cliSessionId === disc.cliSessionId
         );
 
-        // 2. If not, bind to an unbound running Claude session in the same cwd
         if (!match) {
           match = this._sessions.find(
             (s) =>
@@ -498,7 +675,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             }
           }
         } else {
-          // 3. Import existing CLI-stored session for this workspace so it shows in the left pane!
           const imported: CockpitSession = {
             id: `sess-cli-${disc.cliSessionId.slice(0, 8)}`,
             cliSessionId: disc.cliSessionId,
@@ -748,7 +924,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const id = `sess-${Date.now().toString(36)}-${Math.random()
       .toString(36)
       .slice(2, 6)}`;
-    const cliSessionId = crypto.randomUUID();
+    const isClaude = params.command.toLowerCase().startsWith("claude");
+    const cliSessionId = isClaude ? crypto.randomUUID() : undefined;
 
     const session: CockpitSession = {
       id,
@@ -792,6 +969,30 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     if (userInitiated) {
       found.userRenamed = true;
       found.cliSessionName = trimmed;
+
+      // Also persist the updated title back to Antigravity CLI's annotation file if this is an AGY session
+      if (
+        found.command.toLowerCase().startsWith("agy") &&
+        found.cliSessionId
+      ) {
+        try {
+          const pbtxtPath = path.join(
+            os.homedir(),
+            ".gemini",
+            "antigravity-cli",
+            "annotations",
+            `${found.cliSessionId}.pbtxt`
+          );
+          fs.mkdirSync(path.dirname(pbtxtPath), { recursive: true });
+          fs.writeFileSync(
+            pbtxtPath,
+            `title:"${trimmed.replace(/"/g, "")}"\n`,
+            "utf8"
+          );
+        } catch {
+          // ignore
+        }
+      }
     }
     this._persistSessions();
 
@@ -871,10 +1072,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       } catch {
         // ignore
       }
-    }
-
-    if (!found.cliSessionId) {
-      found.cliSessionId = crypto.randomUUID();
     }
 
     const cwd = fs.existsSync(found.cwd) ? found.cwd : this._currentCwd;
@@ -1730,7 +1927,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             (s.id === msg.activeSessionId ? " active" : "") +
             (isStopped ? " stopped" : "");
           card.title = isStopped
-            ? "Terminal closed — Click to resume CLI session (" + (s.cliSessionId ? s.cliSessionId.slice(0, 8) : s.title) + ")"
+            ? "Terminal closed — Click to resume conversation (" + (s.cliSessionId ? s.cliSessionId.slice(0, 8) : s.title) + ")"
             : "Running — Click to focus · Double-click title to rename";
           card.innerHTML =
             '<span class="agent-dot" style="background:' + (s.color || "#1a73e8") + ';">' +
