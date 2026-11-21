@@ -43,40 +43,43 @@ const DEFAULT_PRESETS = [
     {
         id: "agy",
         label: "AGY",
-        badge: "AGY",
+        badge: "✦",
+        color: "#1a73e8",
         command: "agy",
         args: [],
     },
     {
         id: "claude",
         label: "Claude",
-        badge: "CC",
+        badge: "C",
+        color: "#d97757",
         command: "claude",
         args: [],
     },
     {
         id: "codex",
         label: "Codex",
-        badge: "CX",
+        badge: "X",
+        color: "#10a37f",
         command: "codex",
         args: [],
     },
     {
         id: "powershell",
         label: "Shell",
-        badge: "PS",
+        badge: ">_",
+        color: "#5f6368",
         command: "powershell.exe",
         args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
     },
 ];
-function summarizeFirstLine(raw, badge) {
+function summarizeFirstLine(raw, label) {
     const firstLine = raw
         .split(/\r?\n/)
         .map((l) => l.trim())
         .find((l) => l.length > 0);
     if (!firstLine)
         return null;
-    // Ignore the initial agent launch command itself (e.g. "agy", "claude", "codex")
     const lower = firstLine.toLowerCase();
     if (lower === "agy" ||
         lower === "claude" ||
@@ -86,8 +89,8 @@ function summarizeFirstLine(raw, badge) {
         lower === "powershell.exe") {
         return null;
     }
-    const cleaned = firstLine.replace(/\s+/g, " ").slice(0, 28);
-    return `${badge} · ${cleaned}`;
+    const cleaned = firstLine.replace(/\s+/g, " ").slice(0, 26);
+    return `${label} · ${cleaned}`;
 }
 function execGit(cwd, args) {
     return new Promise((resolve, reject) => {
@@ -154,7 +157,6 @@ class AgentCockpitProvider {
                 this.refreshWebviewState();
             }
         });
-        // Auto-rename session based on first executed command via VS Code Shell Integration (if available)
         const winAny = vscode.window;
         if (typeof winAny.onDidStartTerminalShellExecution === "function") {
             this._context.subscriptions.push(winAny.onDidStartTerminalShellExecution((e) => {
@@ -162,9 +164,9 @@ class AgentCockpitProvider {
                 if (!sess || sess.hasCustomTitle)
                     return;
                 const cmdValue = e.execution?.commandLine?.value || "";
-                const autoTitle = summarizeFirstLine(cmdValue, sess.badge);
+                const autoTitle = summarizeFirstLine(cmdValue, sess.title);
                 if (autoTitle) {
-                    this.renameSession(sess.id, autoTitle);
+                    void this.renameSession(sess.id, autoTitle);
                 }
             }));
         }
@@ -191,7 +193,8 @@ class AgentCockpitProvider {
                 case "spawnSession":
                     await this.spawnSession({
                         title: msg.title,
-                        badge: msg.badge || "CLI",
+                        badge: msg.badge || ">_",
+                        color: msg.color || "#1a73e8",
                         command: msg.command,
                         args: msg.args || [],
                         cwd: msg.cwd || this._currentCwd,
@@ -206,11 +209,6 @@ class AgentCockpitProvider {
                 case "renameSession":
                     if (typeof msg.id === "string" && typeof msg.title === "string") {
                         await this.renameSession(msg.id, msg.title);
-                    }
-                    break;
-                case "promptRenameSession":
-                    if (typeof msg.id === "string") {
-                        await this.promptRenameSession(msg.id);
                     }
                     break;
                 case "sendQuickPrompt":
@@ -324,6 +322,7 @@ class AgentCockpitProvider {
             id,
             title: params.title,
             badge: params.badge,
+            color: params.color,
             command: params.command,
             args: params.args,
             cwd: targetCwd,
@@ -348,13 +347,12 @@ class AgentCockpitProvider {
             return;
         found.title = trimmed;
         found.hasCustomTitle = true;
-        // Also update the VS Code terminal tab title
         try {
             found.terminal.show(true);
             await vscode.commands.executeCommand("workbench.action.terminal.renameWithArg", { name: trimmed });
         }
         catch {
-            // ignore if command unavailable
+            // ignore
         }
         await this.refreshWebviewState();
     }
@@ -376,7 +374,7 @@ class AgentCockpitProvider {
         const active = this._sessions.find((s) => s.id === this._activeSessionId) ??
             this._sessions[this._sessions.length - 1];
         if (active && !active.hasCustomTitle) {
-            const autoTitle = summarizeFirstLine(promptText, active.badge);
+            const autoTitle = summarizeFirstLine(promptText, active.title);
             if (autoTitle) {
                 void this.renameSession(active.id, autoTitle);
             }
@@ -425,7 +423,7 @@ class AgentCockpitProvider {
             return;
         }
         if (!active.hasCustomTitle) {
-            const autoTitle = summarizeFirstLine(text, active.badge);
+            const autoTitle = summarizeFirstLine(text, active.title);
             if (autoTitle) {
                 void this.renameSession(active.id, autoTitle);
             }
@@ -543,6 +541,7 @@ class AgentCockpitProvider {
                 index: idx + 1,
                 title: s.title,
                 badge: s.badge,
+                color: s.color,
                 cwd: s.cwd,
                 folderName: path.basename(s.cwd) || s.cwd,
                 branch: s.branch,
@@ -558,161 +557,209 @@ class AgentCockpitProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
-      --surface: rgba(255, 255, 255, 0.035);
-      --surface-hover: rgba(255, 255, 255, 0.075);
-      --border: rgba(255, 255, 255, 0.08);
-      --accent: var(--vscode-button-background, #2f81f7);
-      --muted: var(--vscode-descriptionForeground, #7d8590);
+      --md-surface: var(--vscode-editor-background, #ffffff);
+      --md-border: rgba(128, 134, 139, 0.36);
+      --md-border-strong: rgba(128, 134, 139, 0.58);
+      --md-primary: #1a73e8;
+      --md-primary-bg: rgba(26, 115, 232, 0.12);
+      --md-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
+      --md-shadow-md: 0 3px 6px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08);
+      --md-muted: var(--vscode-descriptionForeground, #5f6368);
+      --md-radius: 8px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: var(--vscode-font-family);
+      font-family: "Segoe UI", Roboto, -apple-system, sans-serif;
       font-size: 12px;
       color: var(--vscode-foreground);
       background: transparent;
-      padding: 8px;
+      padding: 10px;
       height: 100vh;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 10px;
       user-select: none;
     }
 
-    /* Top workspace bar */
+    /* Material Top Bar */
     .top-bar {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 4px;
+      gap: 6px;
     }
-    .cwd-pill {
+    .cwd-btn {
       flex: 1;
       display: flex;
       align-items: center;
-      gap: 5px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 4px 8px;
+      gap: 6px;
+      background: var(--md-surface);
+      border: 1px solid var(--md-border);
+      border-radius: var(--md-radius);
+      box-shadow: var(--md-shadow-sm);
+      padding: 6px 10px;
       cursor: pointer;
       overflow: hidden;
-      font-size: 11.5px;
+      font-size: 12px;
       color: var(--vscode-foreground);
+      transition: all 0.15s ease;
     }
-    .cwd-pill:hover { background: var(--surface-hover); }
+    .cwd-btn:hover {
+      border-color: var(--md-primary);
+      box-shadow: var(--md-shadow-md);
+      transform: translateY(-1px);
+    }
+    .cwd-btn:active {
+      transform: translateY(0);
+    }
     .cwd-name {
       font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .branch-tag {
+    .branch-chip {
       font-size: 10px;
-      color: var(--muted);
+      font-weight: 600;
+      color: var(--md-primary);
+      background: var(--md-primary-bg);
+      padding: 1px 6px;
+      border-radius: 99px;
       margin-left: auto;
       white-space: nowrap;
     }
-    .icon-toggle {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      color: var(--muted);
-      border-radius: 5px;
-      padding: 4px 6px;
-      font-size: 10.5px;
+
+    .chip-btn {
+      background: var(--md-surface);
+      border: 1px solid var(--md-border);
+      box-shadow: var(--md-shadow-sm);
+      color: var(--md-muted);
+      border-radius: var(--md-radius);
+      padding: 6px 9px;
+      font-size: 11px;
+      font-weight: 600;
       cursor: pointer;
+      transition: all 0.15s ease;
     }
-    .icon-toggle:hover { color: var(--vscode-foreground); background: var(--surface-hover); }
-    .icon-toggle.active {
-      color: #79c0ff;
-      border-color: rgba(56, 139, 253, 0.45);
-      background: rgba(56, 139, 253, 0.14);
+    .chip-btn:hover {
+      border-color: var(--md-border-strong);
+      color: var(--vscode-foreground);
+      box-shadow: var(--md-shadow-md);
+      transform: translateY(-1px);
+    }
+    .chip-btn.active {
+      color: var(--md-primary);
+      border-color: var(--md-primary);
+      background: var(--md-primary-bg);
     }
 
-    /* Compact 1-Row Launch Bar */
+    /* Material Agent Launch Buttons */
     .launch-bar {
       display: grid;
-      grid-template-columns: repeat(4, 1fr) 26px;
-      gap: 4px;
+      grid-template-columns: repeat(4, 1fr) 34px;
+      gap: 6px;
     }
-    .launch-btn {
-      background: var(--surface);
-      border: 1px solid var(--border);
+    .md-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      background: var(--md-surface);
+      border: 1px solid var(--md-border);
+      border-radius: var(--md-radius);
+      box-shadow: var(--md-shadow-sm);
       color: var(--vscode-foreground);
-      border-radius: 5px;
-      padding: 5px 4px;
-      font-size: 11px;
-      font-weight: 500;
+      padding: 7px 6px;
+      font-size: 11.5px;
+      font-weight: 600;
       cursor: pointer;
-      text-align: center;
-      transition: background 0.1s, border-color 0.1s;
+      transition: all 0.15s ease;
     }
-    .launch-btn:hover {
-      background: var(--surface-hover);
-      border-color: rgba(255, 255, 255, 0.2);
+    .md-btn:hover {
+      border-color: var(--md-primary);
+      box-shadow: var(--md-shadow-md);
+      transform: translateY(-1px);
+    }
+    .md-btn:active {
+      transform: translateY(0);
+      box-shadow: var(--md-shadow-sm);
+    }
+    .agent-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 5px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9.5px;
+      font-weight: 700;
+      color: #ffffff;
+      flex-shrink: 0;
     }
 
-    /* Optional Custom Popover */
+    /* Custom Command Card */
     .custom-drawer {
       display: none;
-      flex-direction: column;
-      gap: 4px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 6px;
+      gap: 6px;
+      background: var(--md-surface);
+      border: 1px solid var(--md-border);
+      border-radius: var(--md-radius);
+      box-shadow: var(--md-shadow-sm);
+      padding: 8px;
     }
     .custom-drawer.open { display: flex; }
 
     input[type="text"], textarea {
       width: 100%;
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 4px 6px;
-      font-size: 11px;
+      background: var(--md-surface);
+      color: var(--vscode-foreground);
+      border: 1px solid var(--md-border);
+      border-radius: 6px;
+      padding: 6px 9px;
+      font-size: 11.5px;
       font-family: inherit;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
     input[type="text"]:focus, textarea:focus {
       outline: none;
-      border-color: var(--accent);
+      border-color: var(--md-primary);
+      box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.18);
     }
 
-    /* Minimal Session List */
+    /* Material Session Cards */
     .sessions-container {
       flex: 1;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 3px;
+      gap: 6px;
+      padding: 2px 1px;
     }
-    .session-row {
+    .session-card {
       display: flex;
       align-items: center;
-      gap: 7px;
-      padding: 6px 8px;
-      border-radius: 5px;
-      border: 1px solid transparent;
+      gap: 8px;
+      padding: 8px 10px;
+      background: var(--md-surface);
+      border: 1px solid var(--md-border);
+      border-radius: var(--md-radius);
+      box-shadow: var(--md-shadow-sm);
       cursor: pointer;
-      transition: background 0.1s;
+      transition: all 0.15s ease;
     }
-    .session-row:hover {
-      background: var(--surface);
+    .session-card:hover {
+      border-color: var(--md-border-strong);
+      box-shadow: var(--md-shadow-md);
+      transform: translateY(-1px);
     }
-    .session-row.active {
-      background: rgba(47, 129, 247, 0.13);
-      border-color: rgba(47, 129, 247, 0.4);
-    }
-    .dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #3fb950;
-      flex-shrink: 0;
+    .session-card.active {
+      border-color: var(--md-primary);
+      border-left: 4px solid var(--md-primary);
+      background: var(--md-primary-bg);
     }
     .s-title {
       flex: 1;
-      font-weight: 500;
+      font-weight: 600;
       font-size: 12px;
       white-space: nowrap;
       overflow: hidden;
@@ -720,95 +767,142 @@ class AgentCockpitProvider {
     }
     .s-rename-input {
       flex: 1;
-      padding: 2px 5px !important;
+      padding: 3px 6px !important;
       font-size: 11.5px !important;
     }
     .s-folder {
       font-size: 10.5px;
-      color: var(--muted);
-      margin-left: auto;
+      font-weight: 500;
+      color: var(--md-muted);
+      background: rgba(128, 134, 139, 0.12);
+      padding: 2px 6px;
+      border-radius: 4px;
       white-space: nowrap;
     }
     .row-actions {
-      display: none;
+      display: flex;
       align-items: center;
-      gap: 2px;
-      margin-left: 4px;
+      gap: 4px;
     }
-    .session-row:hover .row-actions { display: flex; }
-    .session-row:hover .s-folder { display: none; }
-
-    .mini-btn {
-      background: transparent;
-      border: none;
-      color: var(--muted);
+    .icon-action {
+      width: 22px;
+      height: 22px;
+      border-radius: 5px;
+      border: 1px solid var(--md-border);
+      background: var(--md-surface);
+      color: var(--md-muted);
       cursor: pointer;
-      padding: 1px 4px;
-      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       font-size: 11px;
+      transition: all 0.12s;
     }
-    .mini-btn:hover {
-      color: var(--vscode-foreground);
-      background: var(--surface-hover);
+    .icon-action:hover {
+      color: var(--md-primary);
+      border-color: var(--md-primary);
+      background: var(--md-primary-bg);
     }
-    .empty-state {
+    .icon-action.danger:hover {
+      color: #d93025;
+      border-color: #d93025;
+      background: rgba(217, 48, 37, 0.1);
+    }
+
+    .empty-card {
       margin: auto;
-      color: var(--muted);
-      font-size: 11px;
+      padding: 18px 14px;
+      border: 1px dashed var(--md-border);
+      border-radius: var(--md-radius);
+      color: var(--md-muted);
+      font-size: 11.5px;
       text-align: center;
     }
 
-    /* Quick prompt bar (also auto-renames on first line) */
-    .quick-prompt-row {
-      display: flex;
-      gap: 4px;
-    }
-
-    /* Minimal Footer Tabs (Git & Notes) */
+    /* Footer Prompt & Material Action Bar */
     .footer-bar {
-      border-top: 1px solid var(--border);
-      padding-top: 6px;
       display: flex;
       flex-direction: column;
+      gap: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--md-border);
+    }
+    .prompt-box {
+      display: flex;
       gap: 6px;
     }
-    .footer-tabs {
-      display: flex;
-      gap: 4px;
+    .send-btn {
+      background: var(--md-primary);
+      color: #ffffff;
+      border: 1px solid var(--md-primary);
+      border-radius: 6px;
+      padding: 0 10px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: var(--md-shadow-sm);
+      transition: all 0.15s;
     }
-    .footer-tab {
-      flex: 1;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      color: var(--muted);
-      border-radius: 4px;
-      padding: 4px 6px;
-      font-size: 10.5px;
+    .send-btn:hover {
+      background: #1557b0;
+      box-shadow: var(--md-shadow-md);
+    }
+    .footer-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+    .footer-btn {
+      background: var(--md-surface);
+      border: 1px solid var(--md-border);
+      border-radius: var(--md-radius);
+      box-shadow: var(--md-shadow-sm);
+      color: var(--vscode-foreground);
+      padding: 6px 8px;
+      font-size: 11px;
+      font-weight: 600;
       cursor: pointer;
       text-align: center;
+      transition: all 0.15s ease;
     }
-    .footer-tab:hover, .footer-tab.active {
-      color: var(--vscode-foreground);
-      border-color: rgba(255, 255, 255, 0.22);
+    .footer-btn:hover {
+      border-color: var(--md-primary);
+      box-shadow: var(--md-shadow-md);
+      transform: translateY(-1px);
     }
+    .footer-btn.active {
+      color: var(--md-primary);
+      border-color: var(--md-primary);
+      background: var(--md-primary-bg);
+    }
+
     .drawer-pane {
       display: none;
       flex-direction: column;
-      gap: 4px;
-      max-height: 140px;
+      gap: 5px;
+      max-height: 145px;
       overflow-y: auto;
+      background: var(--md-surface);
+      border: 1px solid var(--md-border);
+      border-radius: var(--md-radius);
+      padding: 8px;
+      box-shadow: var(--md-shadow-sm);
     }
     .drawer-pane.open { display: flex; }
     .git-row {
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
       font-size: 11px;
-      padding: 3px 4px;
-      border-radius: 4px;
+      padding: 4px 6px;
+      border-radius: 5px;
+      border: 1px solid transparent;
     }
-    .git-row:hover { background: var(--surface); }
-    .git-st { color: #e3b341; font-family: monospace; font-size: 10px; width: 14px; }
+    .git-row:hover {
+      border-color: var(--md-border);
+      background: rgba(128, 134, 139, 0.06);
+    }
+    .git-st { color: #e37400; font-family: monospace; font-weight: 700; font-size: 10.5px; width: 14px; }
     .git-path {
       flex: 1;
       white-space: nowrap;
@@ -821,55 +915,59 @@ class AgentCockpitProvider {
   </style>
 </head>
 <body>
-  <!-- Compact Workspace & Mode Row -->
+  <!-- Material Top Row -->
   <div class="top-bar">
-    <div id="cwd-pill" class="cwd-pill" title="Click to change folder">
+    <button id="cwd-pill" class="cwd-btn" title="Click to change working directory">
       <span>📁</span>
       <span id="cwd-name" class="cwd-name">workspace</span>
-      <span id="branch-tag" class="branch-tag"></span>
-    </div>
-    <button id="loc-toggle" class="icon-toggle active" title="Toggle Editor Tab vs Bottom Panel">
+      <span id="branch-tag" class="branch-chip" style="display:none;"></span>
+    </button>
+    <button id="loc-toggle" class="chip-btn active" title="Toggle Editor Tab vs Bottom Panel">
       Tab
     </button>
-    <button id="wt-toggle" class="icon-toggle" title="Isolate next session in a new Git Worktree">
+    <button id="wt-toggle" class="chip-btn" title="Isolate next session in a new Git Worktree">
       WT
     </button>
   </div>
 
-  <!-- 1-Row Quick Launch Bar -->
+  <!-- Material Agent Launch Buttons -->
   <div class="launch-bar">
     <div id="preset-buttons" style="display:contents;"></div>
-    <button id="custom-toggle" class="launch-btn" title="Custom command">+</button>
+    <button id="custom-toggle" class="md-btn" title="Launch custom CLI command">+</button>
   </div>
 
   <div id="custom-drawer" class="custom-drawer">
     <input id="custom-cmd" type="text" placeholder="Command (e.g. agy, claude, aider)" />
+    <button id="custom-go" class="send-btn">Run</button>
   </div>
 
-  <!-- Clean Session List (Double-click or click ✎ to rename) -->
+  <!-- Material Session Cards -->
   <div id="session-list" class="sessions-container"></div>
 
-  <!-- Collapsible Footer (Quick Prompt, Git & Handoff) -->
+  <!-- Material Footer -->
   <div class="footer-bar">
-    <div class="quick-prompt-row">
-      <input
-        id="quick-prompt-input"
-        type="text"
-        placeholder="Send prompt to active agent (auto-names tab)…"
-      />
-    </div>
     <div id="git-drawer" class="drawer-pane"></div>
     <div id="notes-drawer" class="drawer-pane">
       <textarea id="handoff-text" rows="3" placeholder="Shared handoff notes (.agent/handoff.md)…"></textarea>
-      <div style="display:flex;gap:4px;">
-        <button id="save-notes" class="footer-tab">Save</button>
-        <button id="send-notes" class="footer-tab">Send to Agent</button>
+      <div style="display:flex;gap:6px;">
+        <button id="save-notes" class="footer-btn" style="flex:1;">Save</button>
+        <button id="send-notes" class="send-btn" style="flex:1;padding:6px;">Send to Agent</button>
       </div>
     </div>
+
+    <div class="prompt-box">
+      <input
+        id="quick-prompt-input"
+        type="text"
+        placeholder="Prompt active agent (auto-names tab)…"
+      />
+      <button id="quick-prompt-btn" class="send-btn" title="Send prompt">↵</button>
+    </div>
+
     <div class="footer-tabs">
-      <button id="tab-git" class="footer-tab">Git (<span id="git-count">0</span>)</button>
-      <button id="tab-notes" class="footer-tab">Notes</button>
-      <button id="tab-send" class="footer-tab" title="Send editor @file:line selection (Ctrl+Alt+S)">@Line</button>
+      <button id="tab-git" class="footer-btn">Git (<span id="git-count">0</span>)</button>
+      <button id="tab-notes" class="footer-btn">Notes</button>
+      <button id="tab-send" class="footer-btn" title="Send editor @file:line selection (Ctrl+Alt+S)">@Line</button>
     </div>
   </div>
 
@@ -881,7 +979,6 @@ class AgentCockpitProvider {
       defaultLocation: "editor",
       useWorktree: false,
       activeFooter: null,
-      editingId: null,
     };
 
     const cwdPill = document.getElementById("cwd-pill");
@@ -893,12 +990,16 @@ class AgentCockpitProvider {
     const customToggle = document.getElementById("custom-toggle");
     const customDrawer = document.getElementById("custom-drawer");
     const customCmd = document.getElementById("custom-cmd");
+    const customGo = document.getElementById("custom-go");
     const sessionList = document.getElementById("session-list");
     const quickPromptInput = document.getElementById("quick-prompt-input");
+    const quickPromptBtn = document.getElementById("quick-prompt-btn");
     const gitDrawer = document.getElementById("git-drawer");
     const notesDrawer = document.getElementById("notes-drawer");
     const gitCount = document.getElementById("git-count");
     const handoffText = document.getElementById("handoff-text");
+    const tabGit = document.getElementById("tab-git");
+    const tabNotes = document.getElementById("tab-notes");
 
     cwdPill.addEventListener("click", () => {
       vscode.postMessage({ type: "browseCwd" });
@@ -919,45 +1020,58 @@ class AgentCockpitProvider {
       if (customDrawer.classList.contains("open")) customCmd.focus();
     });
 
+    function launchCustom() {
+      if (!customCmd.value.trim()) return;
+      const parts = customCmd.value.trim().split(/\\s+/);
+      vscode.postMessage({
+        type: "spawnSession",
+        title: parts[0],
+        badge: ">_",
+        color: "#5f6368",
+        command: parts[0],
+        args: parts.slice(1),
+        cwd: state.currentCwd,
+        location: state.defaultLocation,
+        useWorktree: state.useWorktree,
+      });
+      customCmd.value = "";
+      customDrawer.classList.remove("open");
+    }
+
     customCmd.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && customCmd.value.trim()) {
-        const parts = customCmd.value.trim().split(/\\s+/);
-        vscode.postMessage({
-          type: "spawnSession",
-          title: parts[0],
-          badge: "CLI",
-          command: parts[0],
-          args: parts.slice(1),
-          cwd: state.currentCwd,
-          location: state.defaultLocation,
-          useWorktree: state.useWorktree,
-        });
-        customCmd.value = "";
-        customDrawer.classList.remove("open");
-      }
+      if (e.key === "Enter") launchCustom();
     });
+    customGo.addEventListener("click", launchCustom);
+
+    function submitQuickPrompt() {
+      if (!quickPromptInput.value.trim()) return;
+      vscode.postMessage({
+        type: "sendQuickPrompt",
+        prompt: quickPromptInput.value.trim(),
+      });
+      quickPromptInput.value = "";
+    }
 
     quickPromptInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && quickPromptInput.value.trim()) {
-        vscode.postMessage({
-          type: "sendQuickPrompt",
-          prompt: quickPromptInput.value.trim(),
-        });
-        quickPromptInput.value = "";
-      }
+      if (e.key === "Enter") submitQuickPrompt();
     });
+    quickPromptBtn.addEventListener("click", submitQuickPrompt);
 
-    document.getElementById("tab-git").addEventListener("click", () => {
+    tabGit.addEventListener("click", () => {
       state.activeFooter = state.activeFooter === "git" ? null : "git";
       gitDrawer.classList.toggle("open", state.activeFooter === "git");
       notesDrawer.classList.remove("open");
+      tabGit.classList.toggle("active", state.activeFooter === "git");
+      tabNotes.classList.remove("active");
       if (state.activeFooter === "git") vscode.postMessage({ type: "refreshGit" });
     });
 
-    document.getElementById("tab-notes").addEventListener("click", () => {
+    tabNotes.addEventListener("click", () => {
       state.activeFooter = state.activeFooter === "notes" ? null : "notes";
       notesDrawer.classList.toggle("open", state.activeFooter === "notes");
       gitDrawer.classList.remove("open");
+      tabNotes.classList.toggle("active", state.activeFooter === "notes");
+      tabGit.classList.remove("active");
     });
 
     document.getElementById("tab-send").addEventListener("click", () => {
@@ -1019,23 +1133,31 @@ class AgentCockpitProvider {
 
       cwdName.textContent = msg.folderName || "workspace";
       cwdPill.title = msg.currentCwd;
-      branchTag.textContent = msg.gitBranch ? msg.gitBranch : "";
+      if (msg.gitBranch) {
+        branchTag.style.display = "inline-block";
+        branchTag.textContent = msg.gitBranch;
+      } else {
+        branchTag.style.display = "none";
+      }
 
       locToggle.textContent = msg.defaultLocation === "editor" ? "Tab" : "Panel";
       locToggle.classList.toggle("active", msg.defaultLocation === "editor");
 
-      // Presets
+      // Material Agent Launch Buttons
       presetButtons.innerHTML = "";
       (msg.presets || []).forEach((p) => {
         const btn = document.createElement("button");
-        btn.className = "launch-btn";
-        btn.textContent = p.label;
+        btn.className = "md-btn";
         btn.title = "Launch " + p.label + " (" + p.command + ")";
+        btn.innerHTML =
+          '<span class="agent-dot" style="background:' + p.color + ';">' + p.badge + '</span>' +
+          '<span>' + p.label + '</span>';
         btn.addEventListener("click", () => {
           vscode.postMessage({
             type: "spawnSession",
             title: p.label,
             badge: p.badge,
+            color: p.color,
             command: p.command,
             args: p.args,
             cwd: state.currentCwd,
@@ -1046,45 +1168,45 @@ class AgentCockpitProvider {
         presetButtons.appendChild(btn);
       });
 
-      // Sessions
+      // Material Session Cards
       sessionList.innerHTML = "";
       if (!msg.sessions || msg.sessions.length === 0) {
-        sessionList.innerHTML = '<div class="empty-state">Click an agent above to start</div>';
+        sessionList.innerHTML = '<div class="empty-card">Click an agent button above to launch a session</div>';
       } else {
         msg.sessions.forEach((s) => {
-          const row = document.createElement("div");
-          row.className = "session-row" + (s.id === msg.activeSessionId ? " active" : "");
-          row.title = "Click to focus · Double-click title to rename";
-          row.innerHTML =
-            '<span class="dot"></span>' +
+          const card = document.createElement("div");
+          card.className = "session-card" + (s.id === msg.activeSessionId ? " active" : "");
+          card.title = "Click to focus · Double-click title to rename";
+          card.innerHTML =
+            '<span class="agent-dot" style="background:' + (s.color || "#1a73e8") + ';">' + s.badge + '</span>' +
             '<span class="s-title">' + s.title + '</span>' +
             '<span class="s-folder">' + s.folderName + '</span>' +
             '<div class="row-actions">' +
-              '<button class="mini-btn act-rename" title="Rename">✎</button>' +
-              '<button class="mini-btn act-send" title="Send @file:line">@</button>' +
-              '<button class="mini-btn act-close" title="Close">✕</button>' +
+              '<button class="icon-action act-rename" title="Rename">✎</button>' +
+              '<button class="icon-action act-send" title="Send @file:line">@</button>' +
+              '<button class="icon-action danger act-close" title="Close">✕</button>' +
             '</div>';
 
-          row.addEventListener("click", () => {
+          card.addEventListener("click", () => {
             vscode.postMessage({ type: "focusSession", id: s.id });
           });
-          row.querySelector(".s-title").addEventListener("dblclick", (e) => {
+          card.querySelector(".s-title").addEventListener("dblclick", (e) => {
             e.stopPropagation();
-            startInlineRename(row, s);
+            startInlineRename(card, s);
           });
-          row.querySelector(".act-rename").addEventListener("click", (e) => {
+          card.querySelector(".act-rename").addEventListener("click", (e) => {
             e.stopPropagation();
-            startInlineRename(row, s);
+            startInlineRename(card, s);
           });
-          row.querySelector(".act-send").addEventListener("click", (e) => {
+          card.querySelector(".act-send").addEventListener("click", (e) => {
             e.stopPropagation();
             vscode.postMessage({ type: "sendSelection", id: s.id });
           });
-          row.querySelector(".act-close").addEventListener("click", (e) => {
+          card.querySelector(".act-close").addEventListener("click", (e) => {
             e.stopPropagation();
             vscode.postMessage({ type: "closeSession", id: s.id });
           });
-          sessionList.appendChild(row);
+          sessionList.appendChild(card);
         });
       }
 
@@ -1093,7 +1215,7 @@ class AgentCockpitProvider {
       gitCount.textContent = String(changes.length);
       gitDrawer.innerHTML = "";
       if (changes.length === 0) {
-        gitDrawer.innerHTML = '<div class="empty-state" style="padding:6px 0;">Clean working tree</div>';
+        gitDrawer.innerHTML = '<div style="color:var(--md-muted);text-align:center;padding:6px 0;">Clean working tree</div>';
       } else {
         changes.forEach((c) => {
           const r = document.createElement("div");
@@ -1101,11 +1223,11 @@ class AgentCockpitProvider {
           r.innerHTML =
             '<span class="git-st">' + c.status + '</span>' +
             '<span class="git-path" title="Click to view diff">' + c.file + '</span>' +
-            '<button class="mini-btn">@</button>';
+            '<button class="icon-action" title="Mention @file">@</button>';
           r.querySelector(".git-path").addEventListener("click", () => {
             vscode.postMessage({ type: "openFileDiff", file: c.file });
           });
-          r.querySelector(".mini-btn").addEventListener("click", () => {
+          r.querySelector(".icon-action").addEventListener("click", () => {
             vscode.postMessage({ type: "mentionFile", file: c.file });
           });
           gitDrawer.appendChild(r);
@@ -1152,6 +1274,7 @@ function activate(context) {
             await provider.spawnSession({
                 title: picked.preset.label,
                 badge: picked.preset.badge,
+                color: picked.preset.color,
                 command: picked.preset.command,
                 args: picked.preset.args,
                 cwd,
@@ -1166,7 +1289,8 @@ function activate(context) {
                 return;
             await provider.spawnSession({
                 title: customCmd,
-                badge: "CLI",
+                badge: ">_",
+                color: "#5f6368",
                 command: customCmd,
                 args: [],
                 cwd,
