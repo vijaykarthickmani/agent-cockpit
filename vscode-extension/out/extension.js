@@ -1725,7 +1725,7 @@ class AgentCockpitProvider {
             .join("\n")
             .trim();
         if (!cleaned) {
-            vscode.window.showWarningMessage("Highlight text or a command first, then right-click → Agent Cockpit.");
+            vscode.window.showWarningMessage("Highlight text or a command first, then press Ctrl+Alt+R (Run in Shell), Ctrl+Alt+T (Send to Terminal), or click the ▶ / >_ icons in the terminal tab bar.");
             return;
         }
         if (mode === "runInShell") {

@@ -52,11 +52,13 @@
       },
       {
         "command": "agentCockpit.runHighlightedCommand",
-        "title": "Agent Cockpit: Run Highlighted Command in Shell"
+        "title": "Agent Cockpit: Run Highlighted Command in Shell",
+        "icon": "$(play)"
       },
       {
         "command": "agentCockpit.sendHighlightedToTerminal",
-        "title": "Agent Cockpit: Send Highlighted Text to Active Terminal"
+        "title": "Agent Cockpit: Send Highlighted Text to Active Terminal",
+        "icon": "$(terminal)"
       },
       {
         "command": "agentCockpit.openHandoff",
@@ -98,6 +100,18 @@
           "group": "navigation@3"
         }
       ],
+      "editor/title": [
+        {
+          "command": "agentCockpit.runHighlightedCommand",
+          "when": "activeEditor == 'terminalEditor'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentCockpit.sendHighlightedToTerminal",
+          "when": "activeEditor == 'terminalEditor'",
+          "group": "navigation@2"
+        }
+      ],
       "terminal/context": [
         {
           "command": "agentCockpit.runHighlightedCommand",
@@ -107,6 +121,18 @@
           "command": "agentCockpit.sendHighlightedToTerminal",
           "group": "1_modification@2"
         }
+      ]
+    },
+    "configurationDefaults": {
+      "terminal.integrated.commandsToSkipShell": [
+        "agentCockpit.runHighlightedCommand",
+        "agentCockpit.sendHighlightedToTerminal",
+        "agentCockpit.newSession",
+        "agentCockpit.switchSession1",
+        "agentCockpit.switchSession2",
+        "agentCockpit.switchSession3",
+        "agentCockpit.switchSession4",
+        "agentCockpit.switchSession5"
       ]
     },
     "keybindings": [
@@ -125,6 +151,11 @@
         "command": "agentCockpit.runHighlightedCommand",
         "key": "ctrl+alt+r",
         "mac": "cmd+alt+r"
+      },
+      {
+        "command": "agentCockpit.sendHighlightedToTerminal",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t"
       },
       {
         "command": "agentCockpit.switchSession1",
