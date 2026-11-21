@@ -1896,20 +1896,27 @@ class AgentCockpitProvider {
             skillsAndAgents,
             aiSnippets: activeSnippets,
             handoffContent,
-            sessions: this._sessions.map((s, idx) => ({
-                id: s.id,
-                cliSessionId: s.cliSessionId,
-                index: idx + 1,
-                title: s.title,
-                badge: s.badge,
-                color: s.color,
-                pinned: Boolean(s.pinned),
-                cwd: s.cwd,
-                folderName: path.basename(s.cwd) || s.cwd,
-                branch: s.branch,
-                isWorktree: s.isWorktree,
-                status: s.status,
-            })),
+            sessions: this._sessions.map((s, idx) => {
+                const rawCmd = (s.command || "").trim().toLowerCase();
+                let cliName = path.basename(rawCmd, path.extname(rawCmd)) || "cli";
+                if (cliName === "powershell")
+                    cliName = "ps1";
+                return {
+                    id: s.id,
+                    cliSessionId: s.cliSessionId,
+                    index: idx + 1,
+                    title: s.title,
+                    badge: s.badge,
+                    cliName,
+                    color: s.color,
+                    pinned: Boolean(s.pinned),
+                    cwd: s.cwd,
+                    folderName: path.basename(s.cwd) || s.cwd,
+                    branch: s.branch,
+                    isWorktree: s.isWorktree,
+                    status: s.status,
+                };
+            }),
         });
     }
     _getHtmlForWebview() {
@@ -2177,6 +2184,51 @@ class AgentCockpitProvider {
       color: #f59e0b;
       flex-shrink: 0;
     }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.65px;
+      text-transform: uppercase;
+      color: var(--md-muted);
+      padding: 4px 3px 2px 3px;
+      user-select: none;
+    }
+    .section-divider {
+      height: 1px;
+      background: var(--md-border);
+      margin: 4px 2px;
+    }
+    .pinned-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 6px;
+      border-radius: 10px;
+      background: rgba(245, 158, 11, 0.06);
+      border: 1px solid rgba(245, 158, 11, 0.22);
+    }
+    .cli-tag {
+      font-family: var(--vscode-editor-font-family, Consolas, monospace);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid var(--md-border-strong);
+      background: var(--bg-shell);
+      color: var(--md-fg);
+      flex-shrink: 0;
+      cursor: pointer;
+      line-height: 15px;
+      transition: opacity 0.12s, transform 0.12s;
+    }
+    .cli-tag:hover {
+      opacity: 0.85;
+      transform: scale(1.03);
+    }
     .color-palette-row {
       display: none;
       align-items: center;
@@ -2340,6 +2392,7 @@ class AgentCockpitProvider {
     .session-card:hover .row-actions {
       display: flex;
     }
+    .session-card:hover .cli-tag,
     .session-card:hover .state-tag,
     .session-card:hover .shortcut-pill {
       display: none;
@@ -2514,8 +2567,7 @@ class AgentCockpitProvider {
   <!-- Material 1-Click Launch Last Used CLI + Installed CLI Dropdown -->
   <div class="launch-bar">
     <button id="launch-last-btn" class="launch-primary-btn" title="1-click launch your last used CLI agent">
-      <span id="launch-last-dot" class="agent-dot" style="background:rgba(255,255,255,0.22);">✦</span>
-      <span id="launch-last-label">Launch AGY</span>
+      <span id="launch-last-label">+ Launch AGY</span>
     </button>
     <select id="cli-dropdown" class="cli-select" title="Select from installed CLIs on this PC"></select>
   </div>
@@ -2606,7 +2658,6 @@ class AgentCockpitProvider {
     const zenTabsToggle = document.getElementById("zen-tabs-toggle");
     const wtToggle = document.getElementById("wt-toggle");
     const launchLastBtn = document.getElementById("launch-last-btn");
-    const launchLastDot = document.getElementById("launch-last-dot");
     const launchLastLabel = document.getElementById("launch-last-label");
     const cliDropdown = document.getElementById("cli-dropdown");
     const customDrawer = document.getElementById("custom-drawer");
@@ -2844,8 +2895,7 @@ class AgentCockpitProvider {
         state.presets[0];
 
       if (selectedPreset) {
-        launchLastDot.textContent = selectedPreset.badge;
-        launchLastLabel.textContent = "Launch " + selectedPreset.label.split(" ")[0];
+        launchLastLabel.textContent = "+ Launch " + selectedPreset.label.split(" ")[0];
         launchLastBtn.title =
           "1-Click Launch " + selectedPreset.label + " (" + selectedPreset.command + ")";
       }
@@ -2854,7 +2904,7 @@ class AgentCockpitProvider {
       state.presets.forEach((p) => {
         const opt = document.createElement("option");
         opt.value = p.id;
-        opt.textContent = p.badge + " " + p.label;
+        opt.textContent = p.label;
         if (p.id === state.lastUsedCliId) opt.selected = true;
         cliDropdown.appendChild(opt);
       });
@@ -2863,14 +2913,15 @@ class AgentCockpitProvider {
       customOpt.textContent = "+ Custom CLI…";
       cliDropdown.appendChild(customOpt);
 
-      // Material Session Cards (with Pinning & Color Coding)
+      // Material Session Cards (Pinned Section Separated at Top + Clean CLI Monospace Tag)
       sessionList.innerHTML = "";
       if (!msg.sessions || msg.sessions.length === 0) {
         sessionList.innerHTML = '<div class="empty-card">Click Launch above to start an agent session</div>';
       } else {
-        msg.sessions.forEach((s) => {
+        const renderSessionCard = (s) => {
           const isStopped = s.status === "stopped";
           const cardColor = s.color || "#3b82f6";
+          const cliTagLabel = s.cliName || "cli";
           const tagInfo = statusLabelFor(s.status, s.folderName);
           const shortcutBadge = s.index <= 5 ? '<span class="shortcut-pill">⌃' + s.index + '</span>' : '';
           const card = document.createElement("div");
@@ -2880,8 +2931,8 @@ class AgentCockpitProvider {
             (isStopped ? " stopped" : "");
           card.style.borderLeft = "4px solid " + cardColor;
           card.title = isStopped
-            ? "Paused — Click to resume conversation (" + s.folderName + ")"
-            : "Status: " + s.status + " · Folder: " + s.cwd + " · Double-click title to rename";
+            ? "Paused (" + cliTagLabel + ") — Click to resume conversation (" + s.folderName + ")"
+            : "CLI: " + cliTagLabel + " · Status: " + s.status + " · Folder: " + s.cwd + " · Double-click title to rename";
 
           const swatchesHtml = COLOR_PALETTE.map(
             (c) =>
@@ -2895,9 +2946,8 @@ class AgentCockpitProvider {
           card.innerHTML =
             '<div class="session-card-main">' +
               '<span class="status-led led-' + s.status + '"></span>' +
-              '<span class="agent-dot act-color" title="Click to change color" style="background:' + cardColor + ';">' + s.badge + '</span>' +
-              (s.pinned ? '<span class="pin-marker" title="Pinned">📌</span>' : '') +
               '<span class="s-title">' + s.title + '</span>' +
+              '<span class="cli-tag act-color" title="CLI: ' + cliTagLabel + ' (Click to change color)" style="border-color:' + cardColor + ';color:' + cardColor + ';">' + cliTagLabel + '</span>' +
               '<span class="state-tag ' + tagInfo.cls + '">' + tagInfo.text + '</span>' +
               shortcutBadge +
               '<div class="row-actions">' +
@@ -2960,8 +3010,36 @@ class AgentCockpitProvider {
             e.stopPropagation();
             vscode.postMessage({ type: "deleteSession", id: s.id });
           });
-          sessionList.appendChild(card);
-        });
+          return card;
+        };
+
+        const pinnedSessions = msg.sessions.filter((s) => s.pinned);
+        const regularSessions = msg.sessions.filter((s) => !s.pinned);
+
+        if (pinnedSessions.length > 0) {
+          const pinHeader = document.createElement("div");
+          pinHeader.className = "section-header";
+          pinHeader.innerHTML = '<span>📌 Pinned</span><span>' + pinnedSessions.length + '</span>';
+          sessionList.appendChild(pinHeader);
+
+          const pinGroup = document.createElement("div");
+          pinGroup.className = "pinned-group";
+          pinnedSessions.forEach((s) => pinGroup.appendChild(renderSessionCard(s)));
+          sessionList.appendChild(pinGroup);
+
+          if (regularSessions.length > 0) {
+            const divider = document.createElement("div");
+            divider.className = "section-divider";
+            sessionList.appendChild(divider);
+
+            const regHeader = document.createElement("div");
+            regHeader.className = "section-header";
+            regHeader.innerHTML = '<span>Conversations</span><span>' + regularSessions.length + '</span>';
+            sessionList.appendChild(regHeader);
+          }
+        }
+
+        regularSessions.forEach((s) => sessionList.appendChild(renderSessionCard(s)));
       }
 
       // Render MCP Servers & Status
