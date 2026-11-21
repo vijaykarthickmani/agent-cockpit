@@ -3221,7 +3221,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     }
     .footer-tabs {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 4px;
     }
     .footer-btn {
@@ -3342,7 +3342,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
   <!-- Material Footer -->
   <div class="footer-bar">
-    <div id="git-drawer" class="drawer-pane"></div>
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
     <div id="notes-drawer" class="drawer-pane">
@@ -3366,7 +3365,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     <div class="footer-tabs">
       <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
       <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
-      <button id="tab-git" class="footer-btn" title="View uncommitted Git changes">Git (<span id="git-count">0</span>)</button>
       <button id="tab-notes" class="footer-btn" title="Shared handoff notes">Notes</button>
     </div>
   </div>
@@ -3428,19 +3426,16 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const quickPromptInput = document.getElementById("quick-prompt-input");
     const quickPromptBtn = document.getElementById("quick-prompt-btn");
 
-    const gitDrawer = document.getElementById("git-drawer");
     const mcpDrawer = document.getElementById("mcp-drawer");
     const skillsDrawer = document.getElementById("skills-drawer");
     const notesDrawer = document.getElementById("notes-drawer");
 
-    const gitCount = document.getElementById("git-count");
     const mcpCount = document.getElementById("mcp-count");
     const skillsCount = document.getElementById("skills-count");
     const handoffText = document.getElementById("handoff-text");
 
     const tabMcp = document.getElementById("tab-mcp");
     const tabSkills = document.getElementById("tab-skills");
-    const tabGit = document.getElementById("tab-git");
     const tabNotes = document.getElementById("tab-notes");
 
     const COLOR_PALETTE = [
@@ -3456,22 +3451,19 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       state.activeFooter = state.activeFooter === which ? null : which;
       mcpDrawer.classList.toggle("open", state.activeFooter === "mcp");
       skillsDrawer.classList.toggle("open", state.activeFooter === "skills");
-      gitDrawer.classList.toggle("open", state.activeFooter === "git");
       notesDrawer.classList.toggle("open", state.activeFooter === "notes");
 
       tabMcp.classList.toggle("active", state.activeFooter === "mcp");
       tabSkills.classList.toggle("active", state.activeFooter === "skills");
-      tabGit.classList.toggle("active", state.activeFooter === "git");
       tabNotes.classList.toggle("active", state.activeFooter === "notes");
 
-      if (state.activeFooter === "git" || state.activeFooter === "mcp") {
+      if (state.activeFooter === "mcp") {
         vscode.postMessage({ type: "refreshGit" });
       }
     }
 
     tabMcp.addEventListener("click", () => setFooterDrawer("mcp"));
     tabSkills.addEventListener("click", () => setFooterDrawer("skills"));
-    tabGit.addEventListener("click", () => setFooterDrawer("git"));
     tabNotes.addEventListener("click", () => setFooterDrawer("notes"));
 
     cwdPill.addEventListener("click", () => {
@@ -3860,30 +3852,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             vscode.postMessage({ type: "useSkillOrAgent", name: sk.name, kind: sk.kind });
           });
           skillsDrawer.appendChild(r);
-        });
-      }
-
-      // Render Git Changes
-      const changes = msg.gitChanges || [];
-      gitCount.textContent = String(changes.length);
-      gitDrawer.innerHTML = "";
-      if (changes.length === 0) {
-        gitDrawer.innerHTML = '<div style="color:var(--md-muted);text-align:center;padding:6px 0;">Clean working tree</div>';
-      } else {
-        changes.forEach((c) => {
-          const r = document.createElement("div");
-          r.className = "item-row";
-          r.innerHTML =
-            '<span class="git-st">' + c.status + '</span>' +
-            '<span class="git-path" title="Click to view diff">' + c.file + '</span>' +
-            '<button class="icon-action" title="Mention @file">@</button>';
-          r.querySelector(".git-path").addEventListener("click", () => {
-            vscode.postMessage({ type: "openFileDiff", file: c.file });
-          });
-          r.querySelector(".icon-action").addEventListener("click", () => {
-            vscode.postMessage({ type: "mentionFile", file: c.file });
-          });
-          gitDrawer.appendChild(r);
         });
       }
 
