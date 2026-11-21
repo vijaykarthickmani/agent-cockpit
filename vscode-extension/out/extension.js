@@ -1978,26 +1978,41 @@ class AgentCockpitProvider {
             return;
         }
         const otherSessions = this._sessions.filter((s) => s.id !== source.id);
-        const items = otherSessions.map((s) => {
-            const cli = path
-                .basename((s.command || "cli").trim().toLowerCase(), path.extname(s.command || ""))
-                .replace(/^powershell$/, "ps1");
-            return {
-                label: s.title,
-                description: `${cli} · ${path.basename(s.cwd)}`,
-                detail: s.status === "stopped" ? "Paused — will auto-resume and receive handoff" : `Live (${s.status})`,
-                sessionId: s.id,
-            };
-        });
-        const installed = getInstalledPresets();
-        for (const p of installed) {
+        const items = [];
+        if (otherSessions.length > 0) {
             items.push({
-                label: `$(add) New ${p.label} Session`,
-                description: p.command,
-                detail: `Launch a fresh ${p.label} session and send handoff notes`,
-                launchNew: true,
-                preset: p,
+                label: "Existing Chat Sessions",
+                kind: vscode.QuickPickItemKind.Separator,
             });
+            for (const s of otherSessions) {
+                const cli = path
+                    .basename((s.command || "cli").trim().toLowerCase(), path.extname(s.command || ""))
+                    .replace(/^powershell$/, "ps1");
+                items.push({
+                    label: s.title,
+                    description: `${cli} · ${path.basename(s.cwd)}`,
+                    detail: s.status === "stopped"
+                        ? "Paused — will auto-resume and receive handoff"
+                        : `Live (${s.status})`,
+                    sessionId: s.id,
+                });
+            }
+        }
+        const installed = getInstalledPresets();
+        if (installed.length > 0) {
+            items.push({
+                label: "Create New Chat with CLI",
+                kind: vscode.QuickPickItemKind.Separator,
+            });
+            for (const p of installed) {
+                items.push({
+                    label: `$(add) New ${p.label} Session`,
+                    description: p.command,
+                    detail: `Create a new ${p.label} chat and send handoff notes`,
+                    launchNew: true,
+                    preset: p,
+                });
+            }
         }
         const picked = await vscode.window.showQuickPick(items, {
             title: `Handoff from "${source.title}"`,
