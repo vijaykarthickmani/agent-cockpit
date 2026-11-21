@@ -1,0 +1,132 @@
+{
+  "name": "agent-cockpit-vscode",
+  "displayName": "Agent Cockpit — Multi-Agent CLI Terminal Manager",
+  "description": "Run and switch between interactive CLI coding agents (Claude Code, Codex, Gemini CLI, shells) as full-height Editor Tabs with cwd picker, isolated Git worktrees, live git status/diff, and @file:line context injection.",
+  "version": "0.1.0",
+  "publisher": "thulir-inc",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "SCM Providers",
+    "Terminal"
+  ],
+  "activationEvents": [
+    "onView:agentCockpit.sidebarView",
+    "onCommand:agentCockpit.newSession",
+    "onCommand:agentCockpit.sendSelection"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agent-cockpit",
+          "title": "Agent Cockpit",
+          "icon": "resources/cockpit-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "agent-cockpit": [
+        {
+          "type": "webview",
+          "id": "agentCockpit.sidebarView",
+          "name": "Cockpit Control"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentCockpit.newSession",
+        "title": "Agent Cockpit: Launch New CLI Agent Session…"
+      },
+      {
+        "command": "agentCockpit.sendSelection",
+        "title": "Agent Cockpit: Send @file:line Selection to Active Agent"
+      },
+      {
+        "command": "agentCockpit.openHandoff",
+        "title": "Agent Cockpit: Open .agent/handoff.md Scratchpad"
+      },
+      {
+        "command": "agentCockpit.switchSession1",
+        "title": "Agent Cockpit: Switch to Agent Session 1"
+      },
+      {
+        "command": "agentCockpit.switchSession2",
+        "title": "Agent Cockpit: Switch to Agent Session 2"
+      },
+      {
+        "command": "agentCockpit.switchSession3",
+        "title": "Agent Cockpit: Switch to Agent Session 3"
+      },
+      {
+        "command": "agentCockpit.switchSession4",
+        "title": "Agent Cockpit: Switch to Agent Session 4"
+      },
+      {
+        "command": "agentCockpit.switchSession5",
+        "title": "Agent Cockpit: Switch to Agent Session 5"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "agentCockpit.sendSelection",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "agentCockpit.newSession",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n"
+      },
+      {
+        "command": "agentCockpit.sendSelection",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "agentCockpit.switchSession1",
+        "key": "ctrl+alt+1",
+        "mac": "cmd+alt+1"
+      },
+      {
+        "command": "agentCockpit.switchSession2",
+        "key": "ctrl+alt+2",
+        "mac": "cmd+alt+2"
+      },
+      {
+        "command": "agentCockpit.switchSession3",
+        "key": "ctrl+alt+3",
+        "mac": "cmd+alt+3"
+      },
+      {
+        "command": "agentCockpit.switchSession4",
+        "key": "ctrl+alt+4",
+        "mac": "cmd+alt+4"
+      },
+      {
+        "command": "agentCockpit.switchSession5",
+        "key": "ctrl+alt+5",
+        "mac": "cmd+alt+5"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.5"
+  }
+}
