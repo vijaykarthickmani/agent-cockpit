@@ -77,6 +77,7 @@ const DEFAULT_PRESETS = [
 ];
 const STORAGE_KEY = "agentCockpit.retainedSessions.v3";
 const DISMISSED_KEY = "agentCockpit.dismissedCliIds.v1";
+const SOUND_PREF_KEY = "agentCockpit.soundEnabled.v1";
 function isTerminalAlive(term) {
     if (!term)
         return false;
@@ -84,9 +85,6 @@ function isTerminalAlive(term) {
         return false;
     return vscode.window.terminals.includes(term);
 }
-/**
- * Safely quote a file path or @file:line reference if it contains spaces
- */
 function formatAtFileRef(relPath, lineRange) {
     const normalized = relPath.replace(/\\/g, "/");
     const suffix = lineRange ? `:${lineRange}` : "";
@@ -97,6 +95,260 @@ function formatAtFileRef(relPath, lineRange) {
 }
 function claudeProjectSlug(cwd) {
     return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+/**
+ * Discover all MCP servers & their live status across:
+ * 1. ~/.gemini/antigravity/mcp/<serverName> & ~/.gemini/antigravity-cli/mcp/<serverName>
+ * 2. <cwd>/.agents/plugins/<plugin>/mcp_config.json
+ * 3. ~/.gemini/config/plugins/<plugin>/mcp_config.json
+ * 4. <cwd>/.mcp.json & ~/.claude.json
+ */
+function discoverMcpServers(cwd) {
+    const map = new Map();
+    const home = os.homedir();
+    // 1. Scan active Antigravity MCP schema directories (shows actually loaded tools!)
+    const mcpCacheRoots = [
+        path.join(home, ".gemini", "antigravity", "mcp"),
+        path.join(home, ".gemini", "antigravity-cli", "mcp"),
+    ];
+    for (const root of mcpCacheRoots) {
+        if (!fs.existsSync(root))
+            continue;
+        try {
+            for (const dirName of fs.readdirSync(root)) {
+                const fullDir = path.join(root, dirName);
+                if (!fs.statSync(fullDir).isDirectory())
+                    continue;
+                const toolFiles = fs
+                    .readdirSync(fullDir)
+                    .filter((f) => f.endsWith(".json") && f !== "mcp_config.json");
+                const tools = toolFiles.map((f) => path.basename(f, ".json"));
+                const parts = dirName.split("_");
+                const source = parts.length > 1 ? parts[0] : "antigravity";
+                const shortName = parts.length > 1 ? parts.slice(1).join("_") : dirName;
+                const existing = map.get(shortName);
+                if (!existing || tools.length > existing.toolCount) {
+                    map.set(shortName, {
+                        id: dirName,
+                        name: shortName,
+                        source,
+                        status: tools.length > 0 ? "connected" : "configured",
+                        toolCount: tools.length,
+                        tools,
+                        detail: tools.length > 0
+                            ? `${tools.length} tools active (${tools.slice(0, 4).join(", ")}${tools.length > 4 ? "…" : ""})`
+                            : "Registered in Antigravity MCP cache",
+                    });
+                }
+            }
+        }
+        catch {
+            // ignore
+        }
+    }
+    // 2. Scan workspace & global plugin mcp_config.json / mcp.json files
+    const configCandidates = [];
+    const scanPluginRoot = (pluginsDir, prefix) => {
+        if (!fs.existsSync(pluginsDir))
+            return;
+        try {
+            for (const pName of fs.readdirSync(pluginsDir)) {
+                const pDir = path.join(pluginsDir, pName);
+                for (const cfgName of ["mcp_config.json", "mcp.json", ".mcp.json"]) {
+                    const cfgPath = path.join(pDir, cfgName);
+                    if (fs.existsSync(cfgPath)) {
+                        configCandidates.push({
+                            file: cfgPath,
+                            source: `${prefix}:${pName}`,
+                        });
+                    }
+                }
+            }
+        }
+        catch {
+            // ignore
+        }
+    };
+    scanPluginRoot(path.join(cwd, ".agents", "plugins"), "workspace");
+    const parentCwd = path.dirname(cwd);
+    if (parentCwd !== cwd) {
+        scanPluginRoot(path.join(parentCwd, ".agents", "plugins"), "workspace");
+    }
+    scanPluginRoot(path.join(home, ".gemini", "config", "plugins"), "plugin");
+    const wsMcp = path.join(cwd, ".mcp.json");
+    if (fs.existsSync(wsMcp)) {
+        configCandidates.push({ file: wsMcp, source: "workspace" });
+    }
+    for (const cand of configCandidates) {
+        try {
+            const raw = JSON.parse(fs.readFileSync(cand.file, "utf8"));
+            const servers = raw.mcpServers || raw.servers || {};
+            for (const [srvName, srvDef] of Object.entries(servers)) {
+                const def = srvDef;
+                let status = "configured";
+                let detail = def.command
+                    ? `${def.command} ${(def.args || []).join(" ")}`
+                    : def.url || "Configured";
+                // Check for unreplaced placeholders or missing local script file
+                if (/\$\{?GCP_REGION|\$\{?region/i.test(detail)) {
+                    status = "error";
+                    detail = "Unconfigured region placeholder (${REGION})";
+                }
+                else if (def.args &&
+                    def.args.length > 0 &&
+                    /\.(mjs|js|py)$/i.test(def.args[0])) {
+                    const scriptPath = def.args[0];
+                    if (!fs.existsSync(scriptPath)) {
+                        status = "error";
+                        detail = `Missing script: ${scriptPath}`;
+                    }
+                }
+                const existing = map.get(srvName);
+                if (existing) {
+                    if (status === "error") {
+                        existing.status = "error";
+                        existing.detail = detail;
+                    }
+                }
+                else {
+                    map.set(srvName, {
+                        id: srvName,
+                        name: srvName,
+                        source: cand.source,
+                        status,
+                        toolCount: 0,
+                        tools: [],
+                        detail,
+                    });
+                }
+            }
+        }
+        catch {
+            // ignore
+        }
+    }
+    return Array.from(map.values()).sort((a, b) => {
+        const score = (s) => s.status === "connected" ? 0 : s.status === "configured" ? 1 : 2;
+        return score(a) - score(b) || a.name.localeCompare(b.name);
+    });
+}
+/**
+ * Parse YAML frontmatter name & description from a SKILL.md file
+ */
+function parseSkillMarkdown(filePath, fallbackName) {
+    try {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (fmMatch) {
+            const fm = fmMatch[1];
+            const nameMatch = fm.match(/^name:\s*(.+)$/m);
+            const descMatch = fm.match(/^description:\s*(.+)$/m);
+            const name = nameMatch
+                ? nameMatch[1].trim().replace(/^["']|["']$/g, "")
+                : fallbackName;
+            const description = descMatch
+                ? descMatch[1].trim().replace(/^["']|["']$/g, "")
+                : "Skill instructions";
+            return { name, description };
+        }
+    }
+    catch {
+        // ignore
+    }
+    return { name: fallbackName, description: "Skill instructions" };
+}
+/**
+ * Discover all available Skills and Subagents across Workspace, Plugins, and Built-ins
+ */
+function discoverSkillsAndAgents(cwd) {
+    const seen = new Set();
+    const items = [];
+    const home = os.homedir();
+    // Built-in Subagents
+    const builtinAgents = [
+        {
+            name: "browser",
+            desc: "Chrome DevTools browser automation subagent",
+        },
+        {
+            name: "research",
+            desc: "Read-only codebase exploration & research subagent",
+        },
+        {
+            name: "image-generator",
+            desc: "Generates or edits images from a brief",
+        },
+        {
+            name: "self",
+            desc: "Parallel subagent with full parent capabilities",
+        },
+    ];
+    for (const ag of builtinAgents) {
+        items.push({
+            name: ag.name,
+            kind: "agent",
+            scope: "Built-in",
+            description: ag.desc,
+        });
+        seen.add(`agent:${ag.name}`);
+    }
+    const scanSkillsDir = (skillsRoot, scope) => {
+        if (!fs.existsSync(skillsRoot))
+            return;
+        try {
+            for (const entry of fs.readdirSync(skillsRoot)) {
+                const skillMd = path.join(skillsRoot, entry, "SKILL.md");
+                if (!fs.existsSync(skillMd))
+                    continue;
+                const parsed = parseSkillMarkdown(skillMd, entry);
+                const key = `skill:${parsed.name.toLowerCase()}`;
+                if (seen.has(key))
+                    continue;
+                seen.add(key);
+                items.push({
+                    name: parsed.name,
+                    kind: "skill",
+                    scope,
+                    description: parsed.description,
+                    filePath: skillMd,
+                });
+            }
+        }
+        catch {
+            // ignore
+        }
+    };
+    // 1. Workspace skills (.agents/skills & .agents/plugins/*/skills)
+    const rootsToCheck = [cwd, path.dirname(cwd)];
+    for (const r of rootsToCheck) {
+        scanSkillsDir(path.join(r, ".agents", "skills"), "Workspace");
+        const wsPlugins = path.join(r, ".agents", "plugins");
+        if (fs.existsSync(wsPlugins)) {
+            try {
+                for (const p of fs.readdirSync(wsPlugins)) {
+                    scanSkillsDir(path.join(wsPlugins, p, "skills"), "Workspace");
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    // 2. Installed Plugin skills (~/.gemini/config/plugins/*/skills)
+    const globalPlugins = path.join(home, ".gemini", "config", "plugins");
+    if (fs.existsSync(globalPlugins)) {
+        try {
+            for (const p of fs.readdirSync(globalPlugins)) {
+                scanSkillsDir(path.join(globalPlugins, p, "skills"), "Plugin");
+            }
+        }
+        catch {
+            // ignore
+        }
+    }
+    // 3. Built-in skills (~/.gemini/antigravity/builtin/skills)
+    scanSkillsDir(path.join(home, ".gemini", "antigravity", "builtin", "skills"), "Built-in");
+    return items;
 }
 function discoverAgySessions(defaultCwd) {
     const results = [];
@@ -134,6 +386,7 @@ function discoverAgySessions(defaultCwd) {
         let title = null;
         let mtimeMs = 0;
         let runtimeHint = "idle";
+        let lastAssistantTurnId;
         const pbtxtPath = path.join(annotationsDir, `${convId}.pbtxt`);
         if (fs.existsSync(pbtxtPath)) {
             try {
@@ -168,7 +421,15 @@ function discoverAgySessions(defaultCwd) {
                 }
                 if (lines.length > 0) {
                     const lastObj = JSON.parse(lines[lines.length - 1]);
-                    if (now - stat.mtimeMs < 4500) {
+                    if (lastObj.source === "MODEL" &&
+                        lastObj.type === "PLANNER_RESPONSE" &&
+                        lastObj.status === "DONE") {
+                        lastAssistantTurnId = `${convId}:${lastObj.step_index ?? lines.length}`;
+                    }
+                    if (now - stat.mtimeMs < 4000 &&
+                        !(lastObj.source === "MODEL" &&
+                            lastObj.type === "PLANNER_RESPONSE" &&
+                            lastObj.status === "DONE")) {
                         runtimeHint = "working";
                     }
                     else if (typeof lastObj.content === "string" &&
@@ -188,6 +449,7 @@ function discoverAgySessions(defaultCwd) {
                 cwd: defaultCwd,
                 mtimeMs: mtimeMs || now,
                 runtimeHint,
+                lastAssistantTurnId,
                 agentType: "agy",
             });
         }
@@ -201,9 +463,10 @@ function parseClaudeJsonlMeta(filePath) {
     let detectedCwd = null;
     let lastRole = null;
     let lastText = "";
+    let lastAssistantTurnId;
     try {
         const stat = fs.statSync(filePath);
-        const isVeryRecent = Date.now() - stat.mtimeMs < 4500;
+        const isVeryRecent = Date.now() - stat.mtimeMs < 3500;
         const content = fs.readFileSync(filePath, "utf8");
         const lines = content.split(/\r?\n/);
         for (const line of lines) {
@@ -246,13 +509,14 @@ function parseClaudeJsonlMeta(filePath) {
                 else if (obj.type === "assistant" &&
                     obj.message?.role === "assistant") {
                     lastRole = "assistant";
+                    if (typeof obj.uuid === "string") {
+                        lastAssistantTurnId = obj.uuid;
+                    }
                     const rawContent = obj.message.content;
                     if (Array.isArray(rawContent)) {
                         const toolUse = rawContent.find((p) => p && p.type === "tool_use");
                         const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
-                        lastText = toolUse
-                            ? "[tool_use]"
-                            : textPart?.text || "";
+                        lastText = toolUse ? "[tool_use]" : textPart?.text || "";
                     }
                 }
             }
@@ -261,7 +525,7 @@ function parseClaudeJsonlMeta(filePath) {
             }
         }
         let runtimeHint = "idle";
-        if (isVeryRecent || lastRole === "user") {
+        if (lastRole === "user" && isVeryRecent) {
             runtimeHint = "working";
         }
         else if (lastText === "[tool_use]" ||
@@ -277,6 +541,7 @@ function parseClaudeJsonlMeta(filePath) {
             title: cleaned,
             cwd: detectedCwd,
             runtimeHint,
+            lastAssistantTurnId,
         };
     }
     catch {
@@ -325,6 +590,7 @@ function discoverClaudeSessionsForCwd(cwd) {
                         cwd: meta.cwd || cwd,
                         mtimeMs: stat.mtimeMs,
                         runtimeHint: meta.runtimeHint,
+                        lastAssistantTurnId: meta.lastAssistantTurnId,
                         agentType: "claude",
                     });
                 }
@@ -471,16 +737,16 @@ class AgentCockpitProvider {
     _activeSessionId = null;
     _currentCwd;
     _defaultLocation = "editor";
-    _singleTabZen = true;
+    _soundEnabled;
     _pollTimer;
     constructor(_context) {
         this._context = _context;
         const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         this._currentCwd = wsFolder || "D:\\Thulir Inc";
+        this._soundEnabled = this._context.globalState.get(SOUND_PREF_KEY, true);
         const savedDismissed = this._context.globalState.get(DISMISSED_KEY) || [];
         this._dismissedCliIds = new Set(savedDismissed);
         const saved = this._context.globalState.get(STORAGE_KEY) || [];
-        // Filter out any previously auto-imported historical sessions or dismissed sessions
         this._sessions = saved
             .filter((meta) => !meta.id.startsWith("sess-agy-") &&
             !meta.id.startsWith("sess-cli-") &&
@@ -555,26 +821,46 @@ class AgentCockpitProvider {
                 if (!sess)
                     return;
                 if (isTerminalAlive(sess.terminal)) {
+                    const wasWorking = sess.status === "working";
                     sess.status = "idle";
+                    if (wasWorking) {
+                        this._triggerNotificationSound("complete", sess.title);
+                    }
                     void this.refreshWebviewState();
                 }
             }));
         }
     }
     /**
-     * Toggle VS Code's top editor tab bar visibility so the left sidebar can act as the
-     * single source of truth without a redundant duplicate top tab strip (+35px height).
+     * Plays an audio notification chime when an AI agent finishes a response or requests approval.
+     * Uses both the Webview's Web Audio API synthesizer AND a native Windows sound fallback.
      */
+    _triggerNotificationSound(kind, sessionTitle) {
+        if (!this._soundEnabled)
+            return;
+        if (this._view) {
+            void this._view.webview.postMessage({
+                type: "playChime",
+                kind,
+                sessionTitle,
+            });
+        }
+        // Native OS chime fallback in case the webview AudioContext hasn't received a user click yet
+        if (process.platform === "win32") {
+            const soundExpr = kind === "approval"
+                ? "[System.Media.SystemSounds]::Exclamation.Play()"
+                : "[System.Media.SystemSounds]::Asterisk.Play()";
+            (0, child_process_1.execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", soundExpr], { timeout: 2500 }, () => { });
+        }
+    }
     async _toggleTopEditorTabBar() {
         const wbConfig = vscode.workspace.getConfiguration("workbench.editor");
         const current = wbConfig.get("showTabs") || "multiple";
         const next = current === "none" ? "multiple" : "none";
         try {
             await wbConfig.update("showTabs", next, vscode.ConfigurationTarget.Global);
-            this._singleTabZen = next === "none";
         }
         catch {
-            // Fallback command
             await vscode.commands.executeCommand(next === "none"
                 ? "workbench.action.hideEditorTabs"
                 : "workbench.action.showMultipleEditorTabs");
@@ -583,42 +869,61 @@ class AgentCockpitProvider {
     }
     _syncCliStoredSessionNames() {
         let changed = false;
+        const applyDiscovered = (match, disc) => {
+            match.cliSessionName = disc.title;
+            if (isTerminalAlive(match.terminal)) {
+                const prevStatus = match.status;
+                const prevTurnId = match.lastAssistantTurnId;
+                if (disc.lastAssistantTurnId &&
+                    prevTurnId &&
+                    disc.lastAssistantTurnId !== prevTurnId) {
+                    match.lastAssistantTurnId = disc.lastAssistantTurnId;
+                    this._triggerNotificationSound(disc.runtimeHint === "needs-input" ? "approval" : "complete", match.title);
+                    changed = true;
+                }
+                else if (disc.lastAssistantTurnId && !prevTurnId) {
+                    match.lastAssistantTurnId = disc.lastAssistantTurnId;
+                }
+                if (prevStatus !== disc.runtimeHint) {
+                    if (prevStatus === "working" &&
+                        (disc.runtimeHint === "idle" || disc.runtimeHint === "needs-input")) {
+                        this._triggerNotificationSound(disc.runtimeHint === "needs-input" ? "approval" : "complete", match.title);
+                    }
+                    match.status = disc.runtimeHint;
+                    changed = true;
+                }
+            }
+            if (!match.userRenamed && match.title !== disc.title) {
+                match.title = disc.title;
+                match.hasCustomTitle = true;
+                changed = true;
+                if (isTerminalAlive(match.terminal)) {
+                    void vscode.commands
+                        .executeCommand("workbench.action.terminal.renameWithArg", {
+                        name: disc.title,
+                    })
+                        .then(undefined, () => { });
+                }
+            }
+        };
         const agyDiscovered = discoverAgySessions(this._currentCwd);
         for (const disc of agyDiscovered) {
             if (this._dismissedCliIds.has(disc.cliSessionId))
                 continue;
             let match = this._sessions.find((s) => s.cliSessionId === disc.cliSessionId);
             if (!match) {
-                // Bind to an unbound AGY session launched in Agent Cockpit after or near this conversation's timestamp
                 match = this._sessions.find((s) => s.command.toLowerCase().startsWith("agy") &&
                     !s.cliSessionId &&
                     !this._sessions.some((other) => other.cliSessionId === disc.cliSessionId) &&
                     disc.mtimeMs >= s.createdAt - 15000);
                 if (match) {
                     match.cliSessionId = disc.cliSessionId;
+                    match.lastAssistantTurnId = disc.lastAssistantTurnId;
                     changed = true;
                 }
             }
             if (match) {
-                match.cliSessionName = disc.title;
-                if (isTerminalAlive(match.terminal)) {
-                    if (match.status !== disc.runtimeHint) {
-                        match.status = disc.runtimeHint;
-                        changed = true;
-                    }
-                }
-                if (!match.userRenamed && match.title !== disc.title) {
-                    match.title = disc.title;
-                    match.hasCustomTitle = true;
-                    changed = true;
-                    if (isTerminalAlive(match.terminal)) {
-                        void vscode.commands
-                            .executeCommand("workbench.action.terminal.renameWithArg", {
-                            name: disc.title,
-                        })
-                            .then(undefined, () => { });
-                    }
-                }
+                applyDiscovered(match, disc);
             }
         }
         const cwdsToScan = new Set([this._currentCwd]);
@@ -639,29 +944,12 @@ class AgentCockpitProvider {
                         disc.mtimeMs >= s.createdAt - 15000);
                     if (match) {
                         match.cliSessionId = disc.cliSessionId;
+                        match.lastAssistantTurnId = disc.lastAssistantTurnId;
                         changed = true;
                     }
                 }
                 if (match) {
-                    match.cliSessionName = disc.title;
-                    if (isTerminalAlive(match.terminal)) {
-                        if (match.status !== disc.runtimeHint) {
-                            match.status = disc.runtimeHint;
-                            changed = true;
-                        }
-                    }
-                    if (!match.userRenamed && match.title !== disc.title) {
-                        match.title = disc.title;
-                        match.hasCustomTitle = true;
-                        changed = true;
-                        if (isTerminalAlive(match.terminal)) {
-                            void vscode.commands
-                                .executeCommand("workbench.action.terminal.renameWithArg", {
-                                name: disc.title,
-                            })
-                                .then(undefined, () => { });
-                        }
-                    }
+                    applyDiscovered(match, disc);
                 }
             }
         }
@@ -726,6 +1014,14 @@ class AgentCockpitProvider {
                 case "toggleTopTabs":
                     await this._toggleTopEditorTabBar();
                     break;
+                case "toggleSound":
+                    this._soundEnabled = !this._soundEnabled;
+                    await this._context.globalState.update(SOUND_PREF_KEY, this._soundEnabled);
+                    if (this._soundEnabled) {
+                        this._triggerNotificationSound("complete", "Sound Enabled");
+                    }
+                    await this.refreshWebviewState();
+                    break;
                 case "spawnSession":
                     await this.spawnSession({
                         title: msg.title,
@@ -763,6 +1059,20 @@ class AgentCockpitProvider {
                     break;
                 case "mentionFile":
                     await this.sendTextToActiveAgent(formatAtFileRef(msg.file), false);
+                    break;
+                case "useSkillOrAgent":
+                    if (typeof msg.name === "string") {
+                        const promptPrefix = msg.kind === "agent"
+                            ? `Use the ${msg.name} subagent to `
+                            : `Use the ${msg.name} skill to `;
+                        await this.sendTextToActiveAgent(promptPrefix, false);
+                    }
+                    break;
+                case "openSkillFile":
+                    if (typeof msg.filePath === "string" && fs.existsSync(msg.filePath)) {
+                        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(msg.filePath));
+                        await vscode.window.showTextDocument(doc);
+                    }
                     break;
                 case "openFileDiff":
                     await this._openGitDiffForFile(msg.file);
@@ -950,8 +1260,6 @@ class AgentCockpitProvider {
             }
         }
         await this.sendTextToActiveAgent(promptText, true);
-        // Immediately move keyboard focus into the terminal canvas so follow-up TUI keystrokes
-        // (y, Esc, Shift+Tab, arrows) go straight to the interactive CLI!
         try {
             await vscode.commands.executeCommand("workbench.action.terminal.focus");
         }
@@ -1167,6 +1475,8 @@ class AgentCockpitProvider {
         this._syncLiveness();
         const gitInfo = await this._getGitChanges(this._currentCwd);
         const handoffContent = this._readHandoffContent();
+        const mcpServers = discoverMcpServers(this._currentCwd);
+        const skillsAndAgents = discoverSkillsAndAgents(this._currentCwd);
         const wbConfig = vscode.workspace.getConfiguration("workbench.editor");
         const showTabs = wbConfig.get("showTabs") || "multiple";
         this._view.webview.postMessage({
@@ -1175,10 +1485,13 @@ class AgentCockpitProvider {
             folderName: path.basename(this._currentCwd) || this._currentCwd,
             defaultLocation: this._defaultLocation,
             topTabsHidden: showTabs === "none",
+            soundEnabled: this._soundEnabled,
             activeSessionId: this._activeSessionId,
             presets: DEFAULT_PRESETS,
             gitBranch: gitInfo.branch,
             gitChanges: gitInfo.changes,
+            mcpServers,
+            skillsAndAgents,
             handoffContent,
             sessions: this._sessions.map((s, idx) => ({
                 id: s.id,
@@ -1294,7 +1607,7 @@ class AgentCockpitProvider {
     .branch-chip {
       font-size: 10px;
       font-weight: 600;
-      color: #60a5fa;
+      color: var(--md-primary);
       background: var(--md-primary-bg);
       padding: 1px 6px;
       border-radius: 99px;
@@ -1321,7 +1634,7 @@ class AgentCockpitProvider {
       transform: translateY(-1px);
     }
     .chip-btn.active {
-      color: #60a5fa;
+      color: var(--md-primary);
       border-color: var(--md-primary);
       background: var(--md-primary-bg);
     }
@@ -1396,7 +1709,7 @@ class AgentCockpitProvider {
       box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.22);
     }
 
-    /* Material Session Cards with Live Status & Shortcut Badges */
+    /* Material Session Cards */
     .sessions-container {
       flex: 1;
       overflow-y: auto;
@@ -1429,7 +1742,6 @@ class AgentCockpitProvider {
       background: var(--md-primary-bg);
     }
 
-    /* Live Status Dot */
     .status-led {
       width: 8px;
       height: 8px;
@@ -1448,7 +1760,6 @@ class AgentCockpitProvider {
     }
     .led-idle {
       background: var(--st-idle);
-      box-shadow: 0 0 5px rgba(56, 189, 248, 0.45);
     }
     .led-stopped {
       background: var(--st-stopped);
@@ -1477,8 +1788,8 @@ class AgentCockpitProvider {
       font-size: 9.5px;
       font-weight: 600;
       color: var(--md-muted);
-      background: rgba(148, 163, 184, 0.12);
-      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(148, 163, 184, 0.14);
+      border: 1px solid var(--md-border);
       padding: 1px 4px;
       border-radius: 4px;
       white-space: nowrap;
@@ -1493,19 +1804,19 @@ class AgentCockpitProvider {
       white-space: nowrap;
     }
     .tag-working {
-      color: #4ade80;
+      color: var(--st-working);
       background: rgba(34, 197, 94, 0.15);
     }
     .tag-needs-input {
-      color: #fbbf24;
+      color: var(--st-needs-input);
       background: rgba(245, 158, 11, 0.18);
     }
     .tag-idle {
       color: var(--md-muted);
-      background: rgba(148, 163, 184, 0.12);
+      background: rgba(148, 163, 184, 0.14);
     }
     .tag-stopped {
-      color: #60a5fa;
+      color: var(--md-primary);
       background: var(--md-primary-bg);
       border: 1px solid rgba(59, 130, 246, 0.35);
     }
@@ -1538,12 +1849,12 @@ class AgentCockpitProvider {
       transition: all 0.12s;
     }
     .icon-action:hover {
-      color: #60a5fa;
+      color: var(--md-primary);
       border-color: var(--md-primary);
       background: var(--md-primary-bg);
     }
     .icon-action.danger:hover {
-      color: #f87171;
+      color: #ef4444;
       border-color: #ef4444;
       background: rgba(239, 68, 68, 0.15);
     }
@@ -1558,7 +1869,7 @@ class AgentCockpitProvider {
       text-align: center;
     }
 
-    /* Footer Prompt & Material Action Bar */
+    /* Footer Prompt & 5-Tab Material Action Bar */
     .footer-bar {
       display: flex;
       flex-direction: column;
@@ -1586,20 +1897,21 @@ class AgentCockpitProvider {
     }
     .footer-tabs {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 5px;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 4px;
     }
     .footer-btn {
       background: var(--md-surface);
       border: 1px solid var(--md-border);
-      border-radius: var(--md-radius);
+      border-radius: 6px;
       box-shadow: var(--md-shadow-sm);
       color: var(--md-fg);
-      padding: 6px 7px;
-      font-size: 10.8px;
+      padding: 5px 3px;
+      font-size: 10.2px;
       font-weight: 600;
       cursor: pointer;
       text-align: center;
+      white-space: nowrap;
       transition: all 0.14s ease;
     }
     .footer-btn:hover {
@@ -1608,7 +1920,7 @@ class AgentCockpitProvider {
       transform: translateY(-1px);
     }
     .footer-btn.active {
-      color: #60a5fa;
+      color: var(--md-primary);
       border-color: var(--md-primary);
       background: var(--md-primary-bg);
     }
@@ -1617,29 +1929,47 @@ class AgentCockpitProvider {
       display: none;
       flex-direction: column;
       gap: 5px;
-      max-height: 145px;
+      max-height: 175px;
       overflow-y: auto;
       background: var(--md-surface);
       border: 1px solid var(--md-border);
       border-radius: var(--md-radius);
-      padding: 8px;
+      padding: 7px;
       box-shadow: var(--md-shadow-sm);
     }
     .drawer-pane.open { display: flex; }
-    .git-row {
+
+    /* MCP & Skills Drawer Rows */
+    .item-row {
       display: flex;
       align-items: center;
       gap: 6px;
       font-size: 11px;
-      padding: 4px 6px;
-      border-radius: 5px;
-      border: 1px solid transparent;
+      padding: 5px 6px;
+      border-radius: 6px;
+      border: 1px solid var(--md-border);
+      background: var(--bg-shell);
     }
-    .git-row:hover {
-      border-color: var(--md-border);
-      background: var(--md-surface-hover);
+    .item-title {
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
     }
-    .git-st { color: #fbbf24; font-family: monospace; font-weight: 700; font-size: 10.5px; width: 14px; }
+    .scope-pill {
+      font-size: 9.5px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(148, 163, 184, 0.15);
+      color: var(--md-muted);
+      white-space: nowrap;
+    }
+    .mcp-connected { color: var(--st-working); background: rgba(34, 197, 94, 0.14); }
+    .mcp-configured { color: var(--st-idle); background: rgba(56, 189, 248, 0.14); }
+    .mcp-error { color: #ef4444; background: rgba(239, 68, 68, 0.15); }
+    .git-st { color: var(--st-needs-input); font-family: monospace; font-weight: 700; font-size: 10.5px; width: 14px; }
     .git-path {
       flex: 1;
       white-space: nowrap;
@@ -1658,6 +1988,9 @@ class AgentCockpitProvider {
       <span>📁</span>
       <span id="cwd-name" class="cwd-name">workspace</span>
       <span id="branch-tag" class="branch-chip" style="display:none;"></span>
+    </button>
+    <button id="sound-toggle" class="chip-btn active" title="Toggle AI response completion notification sound">
+      🔔
     </button>
     <button id="zen-tabs-toggle" class="chip-btn" title="Hide/Show redundant top Editor Tab bar (+35px terminal height)">
       Zen
@@ -1684,6 +2017,8 @@ class AgentCockpitProvider {
   <!-- Material Footer -->
   <div class="footer-bar">
     <div id="git-drawer" class="drawer-pane"></div>
+    <div id="mcp-drawer" class="drawer-pane"></div>
+    <div id="skills-drawer" class="drawer-pane"></div>
     <div id="notes-drawer" class="drawer-pane">
       <textarea id="handoff-text" rows="3" placeholder="Shared handoff notes (.agent/handoff.md)…"></textarea>
       <div style="display:flex;gap:6px;">
@@ -1702,8 +2037,10 @@ class AgentCockpitProvider {
     </div>
 
     <div class="footer-tabs">
-      <button id="tab-git" class="footer-btn">Git (<span id="git-count">0</span>)</button>
-      <button id="tab-notes" class="footer-btn">Notes</button>
+      <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
+      <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
+      <button id="tab-git" class="footer-btn" title="View uncommitted Git changes">Git (<span id="git-count">0</span>)</button>
+      <button id="tab-notes" class="footer-btn" title="Shared handoff notes">Notes</button>
       <button id="tab-send" class="footer-btn" title="Send editor @file:line selection (Ctrl+Alt+S)">@Line</button>
     </div>
   </div>
@@ -1716,12 +2053,43 @@ class AgentCockpitProvider {
       defaultLocation: "editor",
       useWorktree: false,
       activeFooter: null,
-      lightMode: false,
     };
+
+    // Web Audio API harmonic chime synthesizer
+    let audioCtx = null;
+    function playWebAudioChime(kind) {
+      try {
+        if (!audioCtx) {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          audioCtx = new AudioContextClass();
+        }
+        if (audioCtx.state === "suspended") {
+          audioCtx.resume();
+        }
+        const now = audioCtx.currentTime;
+        const notes = kind === "approval" ? [659.25, 880.0] : [523.25, 783.99];
+        notes.forEach((freq, idx) => {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(freq, now + idx * 0.11);
+          gain.gain.setValueAtTime(0.001, now + idx * 0.11);
+          gain.gain.exponentialRampToValueAtTime(0.18, now + idx * 0.11 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.11 + 0.35);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start(now + idx * 0.11);
+          osc.stop(now + idx * 0.11 + 0.36);
+        });
+      } catch {
+        // Fallback handled by host OS sound
+      }
+    }
 
     const cwdPill = document.getElementById("cwd-pill");
     const cwdName = document.getElementById("cwd-name");
     const branchTag = document.getElementById("branch-tag");
+    const soundToggle = document.getElementById("sound-toggle");
     const zenTabsToggle = document.getElementById("zen-tabs-toggle");
     const wtToggle = document.getElementById("wt-toggle");
     const presetButtons = document.getElementById("preset-buttons");
@@ -1732,15 +2100,51 @@ class AgentCockpitProvider {
     const sessionList = document.getElementById("session-list");
     const quickPromptInput = document.getElementById("quick-prompt-input");
     const quickPromptBtn = document.getElementById("quick-prompt-btn");
+
     const gitDrawer = document.getElementById("git-drawer");
+    const mcpDrawer = document.getElementById("mcp-drawer");
+    const skillsDrawer = document.getElementById("skills-drawer");
     const notesDrawer = document.getElementById("notes-drawer");
+
     const gitCount = document.getElementById("git-count");
+    const mcpCount = document.getElementById("mcp-count");
+    const skillsCount = document.getElementById("skills-count");
     const handoffText = document.getElementById("handoff-text");
+
+    const tabMcp = document.getElementById("tab-mcp");
+    const tabSkills = document.getElementById("tab-skills");
     const tabGit = document.getElementById("tab-git");
     const tabNotes = document.getElementById("tab-notes");
 
+    function setFooterDrawer(which) {
+      state.activeFooter = state.activeFooter === which ? null : which;
+      mcpDrawer.classList.toggle("open", state.activeFooter === "mcp");
+      skillsDrawer.classList.toggle("open", state.activeFooter === "skills");
+      gitDrawer.classList.toggle("open", state.activeFooter === "git");
+      notesDrawer.classList.toggle("open", state.activeFooter === "notes");
+
+      tabMcp.classList.toggle("active", state.activeFooter === "mcp");
+      tabSkills.classList.toggle("active", state.activeFooter === "skills");
+      tabGit.classList.toggle("active", state.activeFooter === "git");
+      tabNotes.classList.toggle("active", state.activeFooter === "notes");
+
+      if (state.activeFooter === "git" || state.activeFooter === "mcp") {
+        vscode.postMessage({ type: "refreshGit" });
+      }
+    }
+
+    tabMcp.addEventListener("click", () => setFooterDrawer("mcp"));
+    tabSkills.addEventListener("click", () => setFooterDrawer("skills"));
+    tabGit.addEventListener("click", () => setFooterDrawer("git"));
+    tabNotes.addEventListener("click", () => setFooterDrawer("notes"));
+
     cwdPill.addEventListener("click", () => {
       vscode.postMessage({ type: "browseCwd" });
+    });
+
+    soundToggle.addEventListener("click", () => {
+      playWebAudioChime("complete");
+      vscode.postMessage({ type: "toggleSound" });
     });
 
     zenTabsToggle.addEventListener("click", () => {
@@ -1784,7 +2188,6 @@ class AgentCockpitProvider {
       const val = quickPromptInput.value.trim();
       if (!val) return;
       quickPromptInput.value = "";
-      // Blur immediately so follow-up keystrokes (y, Esc, Shift+Tab) go straight to the PTY terminal
       quickPromptInput.blur();
       vscode.postMessage({
         type: "sendQuickPrompt",
@@ -1799,23 +2202,6 @@ class AgentCockpitProvider {
       }
     });
     quickPromptBtn.addEventListener("click", submitQuickPrompt);
-
-    tabGit.addEventListener("click", () => {
-      state.activeFooter = state.activeFooter === "git" ? null : "git";
-      gitDrawer.classList.toggle("open", state.activeFooter === "git");
-      notesDrawer.classList.remove("open");
-      tabGit.classList.toggle("active", state.activeFooter === "git");
-      tabNotes.classList.remove("active");
-      if (state.activeFooter === "git") vscode.postMessage({ type: "refreshGit" });
-    });
-
-    tabNotes.addEventListener("click", () => {
-      state.activeFooter = state.activeFooter === "notes" ? null : "notes";
-      notesDrawer.classList.toggle("open", state.activeFooter === "notes");
-      gitDrawer.classList.remove("open");
-      tabNotes.classList.toggle("active", state.activeFooter === "notes");
-      tabGit.classList.remove("active");
-    });
 
     document.getElementById("tab-send").addEventListener("click", () => {
       vscode.postMessage({ type: "sendSelection" });
@@ -1876,6 +2262,10 @@ class AgentCockpitProvider {
 
     window.addEventListener("message", (event) => {
       const msg = event.data;
+      if (msg.type === "playChime") {
+        playWebAudioChime(msg.kind);
+        return;
+      }
       if (msg.type !== "state") return;
 
       state.currentCwd = msg.currentCwd;
@@ -1890,6 +2280,8 @@ class AgentCockpitProvider {
         branchTag.style.display = "none";
       }
 
+      soundToggle.textContent = msg.soundEnabled ? "🔔" : "🔕";
+      soundToggle.classList.toggle("active", Boolean(msg.soundEnabled));
       zenTabsToggle.classList.toggle("active", Boolean(msg.topTabsHidden));
 
       // Material Agent Launch Buttons
@@ -1972,7 +2364,58 @@ class AgentCockpitProvider {
         });
       }
 
-      // Git
+      // Render MCP Servers & Status
+      const mcps = msg.mcpServers || [];
+      mcpCount.textContent = String(mcps.length);
+      mcpDrawer.innerHTML = "";
+      if (mcps.length === 0) {
+        mcpDrawer.innerHTML = '<div style="color:var(--md-muted);text-align:center;padding:6px 0;">No MCP servers detected</div>';
+      } else {
+        mcps.forEach((m) => {
+          const r = document.createElement("div");
+          r.className = "item-row";
+          r.title = m.source + " · " + m.detail;
+          const ledCls = m.status === "connected" ? "led-working" : m.status === "configured" ? "led-idle" : "led-needs-input";
+          const pillCls = m.status === "connected" ? "mcp-connected" : m.status === "configured" ? "mcp-configured" : "mcp-error";
+          const pillText = m.status === "connected" ? (m.toolCount + " tools") : m.status;
+          r.innerHTML =
+            '<span class="status-led ' + ledCls + '"></span>' +
+            '<span class="item-title">' + m.name + '</span>' +
+            '<span class="scope-pill ' + pillCls + '">' + pillText + '</span>';
+          mcpDrawer.appendChild(r);
+        });
+      }
+
+      // Render Skills & Subagents
+      const skills = msg.skillsAndAgents || [];
+      skillsCount.textContent = String(skills.length);
+      skillsDrawer.innerHTML = "";
+      if (skills.length === 0) {
+        skillsDrawer.innerHTML = '<div style="color:var(--md-muted);text-align:center;padding:6px 0;">No skills detected</div>';
+      } else {
+        skills.forEach((sk) => {
+          const r = document.createElement("div");
+          r.className = "item-row";
+          r.title = sk.description;
+          r.innerHTML =
+            '<span class="scope-pill">' + (sk.kind === "agent" ? "🤖 Agent" : "⚡ " + sk.scope) + '</span>' +
+            '<span class="item-title">' + sk.name + '</span>' +
+            (sk.filePath ? '<button class="icon-action sk-open" title="Open SKILL.md">↗</button>' : '') +
+            '<button class="icon-action sk-use" title="Insert into active agent">↵</button>';
+          const openBtn = r.querySelector(".sk-open");
+          if (openBtn) {
+            openBtn.addEventListener("click", () => {
+              vscode.postMessage({ type: "openSkillFile", filePath: sk.filePath });
+            });
+          }
+          r.querySelector(".sk-use").addEventListener("click", () => {
+            vscode.postMessage({ type: "useSkillOrAgent", name: sk.name, kind: sk.kind });
+          });
+          skillsDrawer.appendChild(r);
+        });
+      }
+
+      // Render Git Changes
       const changes = msg.gitChanges || [];
       gitCount.textContent = String(changes.length);
       gitDrawer.innerHTML = "";
@@ -1981,7 +2424,7 @@ class AgentCockpitProvider {
       } else {
         changes.forEach((c) => {
           const r = document.createElement("div");
-          r.className = "git-row";
+          r.className = "item-row";
           r.innerHTML =
             '<span class="git-st">' + c.status + '</span>' +
             '<span class="git-path" title="Click to view diff">' + c.file + '</span>' +
