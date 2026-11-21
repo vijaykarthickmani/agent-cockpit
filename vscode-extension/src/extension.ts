@@ -51,6 +51,7 @@ interface CockpitSession {
   cwd: string;
   branch?: string;
   isWorktree?: boolean;
+  hasCustomTitle: boolean;
   location: "editor" | "panel";
   terminal: vscode.Terminal;
   createdAt: number;
@@ -59,6 +60,30 @@ interface CockpitSession {
 interface GitFileChange {
   status: string;
   file: string;
+}
+
+function summarizeFirstLine(raw: string, badge: string): string | null {
+  const firstLine = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!firstLine) return null;
+
+  // Ignore the initial agent launch command itself (e.g. "agy", "claude", "codex")
+  const lower = firstLine.toLowerCase();
+  if (
+    lower === "agy" ||
+    lower === "claude" ||
+    lower === "codex" ||
+    lower === "gemini" ||
+    lower === "powershell" ||
+    lower === "powershell.exe"
+  ) {
+    return null;
+  }
+
+  const cleaned = firstLine.replace(/\s+/g, " ").slice(0, 28);
+  return `${badge} · ${cleaned}`;
 }
 
 function execGit(cwd: string, args: string[]): Promise<string> {
@@ -136,6 +161,30 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         this.refreshWebviewState();
       }
     });
+
+    // Auto-rename session based on first executed command via VS Code Shell Integration (if available)
+    const winAny = vscode.window as unknown as {
+      onDidStartTerminalShellExecution?: (
+        listener: (e: {
+          terminal: vscode.Terminal;
+          execution: { commandLine?: { value?: string } };
+        }) => void
+      ) => vscode.Disposable;
+    };
+
+    if (typeof winAny.onDidStartTerminalShellExecution === "function") {
+      this._context.subscriptions.push(
+        winAny.onDidStartTerminalShellExecution((e) => {
+          const sess = this._sessions.find((s) => s.terminal === e.terminal);
+          if (!sess || sess.hasCustomTitle) return;
+          const cmdValue = e.execution?.commandLine?.value || "";
+          const autoTitle = summarizeFirstLine(cmdValue, sess.badge);
+          if (autoTitle) {
+            this.renameSession(sess.id, autoTitle);
+          }
+        })
+      );
+    }
   }
 
   public resolveWebviewView(
@@ -175,6 +224,21 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           break;
         case "focusSession":
           this.focusSessionById(msg.id);
+          break;
+        case "renameSession":
+          if (typeof msg.id === "string" && typeof msg.title === "string") {
+            await this.renameSession(msg.id, msg.title);
+          }
+          break;
+        case "promptRenameSession":
+          if (typeof msg.id === "string") {
+            await this.promptRenameSession(msg.id);
+          }
+          break;
+        case "sendQuickPrompt":
+          if (typeof msg.prompt === "string" && msg.prompt.trim()) {
+            this.sendQuickPromptToActiveAgent(msg.prompt.trim());
+          }
           break;
         case "closeSession":
           await this.closeSessionById(msg.id);
@@ -231,15 +295,15 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   }) {
     let targetCwd = params.cwd.trim();
     if (!fs.existsSync(targetCwd) || !fs.statSync(targetCwd).isDirectory()) {
-      vscode.window.showErrorMessage(
-        `Directory does not exist: ${targetCwd}`
-      );
+      vscode.window.showErrorMessage(`Directory does not exist: ${targetCwd}`);
       return;
     }
 
     let isWorktree = false;
     if (params.useWorktree) {
-      const slug = (params.worktreeName || `wt-${Date.now().toString(36).slice(-4)}`)
+      const slug = (
+        params.worktreeName || `wt-${Date.now().toString(36).slice(-4)}`
+      )
         .trim()
         .replace(/[^a-zA-Z0-9-_]/g, "-");
       const parentDir = path.dirname(targetCwd);
@@ -315,6 +379,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       cwd: targetCwd,
       branch,
       isWorktree,
+      hasCustomTitle: false,
       location: params.location,
       terminal,
       createdAt: Date.now(),
@@ -324,6 +389,60 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     this._activeSessionId = id;
     this._currentCwd = targetCwd;
     await this.refreshWebviewState();
+  }
+
+  public async renameSession(id: string, newTitleRaw: string) {
+    const trimmed = newTitleRaw.trim();
+    if (!trimmed) return;
+    const found = this._sessions.find((s) => s.id === id);
+    if (!found) return;
+
+    found.title = trimmed;
+    found.hasCustomTitle = true;
+
+    // Also update the VS Code terminal tab title
+    try {
+      found.terminal.show(true);
+      await vscode.commands.executeCommand(
+        "workbench.action.terminal.renameWithArg",
+        { name: trimmed }
+      );
+    } catch {
+      // ignore if command unavailable
+    }
+
+    await this.refreshWebviewState();
+  }
+
+  public async promptRenameSession(id?: string) {
+    const targetId = id || this._activeSessionId;
+    const found =
+      this._sessions.find((s) => s.id === targetId) ??
+      this._sessions[this._sessions.length - 1];
+    if (!found) return;
+
+    const input = await vscode.window.showInputBox({
+      prompt: "Rename terminal session",
+      value: found.title,
+    });
+    if (input && input.trim()) {
+      await this.renameSession(found.id, input.trim());
+    }
+  }
+
+  public sendQuickPromptToActiveAgent(promptText: string) {
+    const active =
+      this._sessions.find((s) => s.id === this._activeSessionId) ??
+      this._sessions[this._sessions.length - 1];
+
+    if (active && !active.hasCustomTitle) {
+      const autoTitle = summarizeFirstLine(promptText, active.badge);
+      if (autoTitle) {
+        void this.renameSession(active.id, autoTitle);
+      }
+    }
+
+    this.sendTextToActiveAgent(promptText, true);
   }
 
   public focusSessionByIndex(indexZeroBased: number) {
@@ -368,6 +487,13 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       }
       vscode.window.showWarningMessage("Launch an agent session first.");
       return;
+    }
+
+    if (!active.hasCustomTitle) {
+      const autoTitle = summarizeFirstLine(text, active.badge);
+      if (autoTitle) {
+        void this.renameSession(active.id, autoTitle);
+      }
     }
 
     active.terminal.show(false);
@@ -667,11 +793,17 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       flex-shrink: 0;
     }
     .s-title {
+      flex: 1;
       font-weight: 500;
       font-size: 12px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .s-rename-input {
+      flex: 1;
+      padding: 2px 5px !important;
+      font-size: 11.5px !important;
     }
     .s-folder {
       font-size: 10.5px;
@@ -706,6 +838,12 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       color: var(--muted);
       font-size: 11px;
       text-align: center;
+    }
+
+    /* Quick prompt bar (also auto-renames on first line) */
+    .quick-prompt-row {
+      display: flex;
+      gap: 4px;
     }
 
     /* Minimal Footer Tabs (Git & Notes) */
@@ -788,14 +926,20 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
   <div id="custom-drawer" class="custom-drawer">
     <input id="custom-cmd" type="text" placeholder="Command (e.g. agy, claude, aider)" />
-    <div class="custom-drawer open" style="display:none;" id="wt-input-wrap"></div>
   </div>
 
-  <!-- Clean Session List -->
+  <!-- Clean Session List (Double-click or click ✎ to rename) -->
   <div id="session-list" class="sessions-container"></div>
 
-  <!-- Collapsible Footer (Git & Handoff) -->
+  <!-- Collapsible Footer (Quick Prompt, Git & Handoff) -->
   <div class="footer-bar">
+    <div class="quick-prompt-row">
+      <input
+        id="quick-prompt-input"
+        type="text"
+        placeholder="Send prompt to active agent (auto-names tab)…"
+      />
+    </div>
     <div id="git-drawer" class="drawer-pane"></div>
     <div id="notes-drawer" class="drawer-pane">
       <textarea id="handoff-text" rows="3" placeholder="Shared handoff notes (.agent/handoff.md)…"></textarea>
@@ -819,6 +963,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       defaultLocation: "editor",
       useWorktree: false,
       activeFooter: null,
+      editingId: null,
     };
 
     const cwdPill = document.getElementById("cwd-pill");
@@ -831,6 +976,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const customDrawer = document.getElementById("custom-drawer");
     const customCmd = document.getElementById("custom-cmd");
     const sessionList = document.getElementById("session-list");
+    const quickPromptInput = document.getElementById("quick-prompt-input");
     const gitDrawer = document.getElementById("git-drawer");
     const notesDrawer = document.getElementById("notes-drawer");
     const gitCount = document.getElementById("git-count");
@@ -873,6 +1019,16 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    quickPromptInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && quickPromptInput.value.trim()) {
+        vscode.postMessage({
+          type: "sendQuickPrompt",
+          prompt: quickPromptInput.value.trim(),
+        });
+        quickPromptInput.value = "";
+      }
+    });
+
     document.getElementById("tab-git").addEventListener("click", () => {
       state.activeFooter = state.activeFooter === "git" ? null : "git";
       gitDrawer.classList.toggle("open", state.activeFooter === "git");
@@ -897,6 +1053,44 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     document.getElementById("send-notes").addEventListener("click", () => {
       vscode.postMessage({ type: "sendHandoff", content: handoffText.value });
     });
+
+    function startInlineRename(row, session) {
+      const titleEl = row.querySelector(".s-title");
+      if (!titleEl) return;
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "s-rename-input";
+      input.value = session.title;
+
+      let committed = false;
+      const commit = () => {
+        if (committed) return;
+        committed = true;
+        const val = input.value.trim();
+        if (val && val !== session.title) {
+          vscode.postMessage({ type: "renameSession", id: session.id, title: val });
+        } else {
+          vscode.postMessage({ type: "ready" });
+        }
+      };
+
+      input.addEventListener("click", (e) => e.stopPropagation());
+      input.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          commit();
+        } else if (e.key === "Escape") {
+          committed = true;
+          vscode.postMessage({ type: "ready" });
+        }
+      });
+      input.addEventListener("blur", commit);
+
+      titleEl.replaceWith(input);
+      input.focus();
+      input.select();
+    }
 
     window.addEventListener("message", (event) => {
       const msg = event.data;
@@ -942,17 +1136,27 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         msg.sessions.forEach((s) => {
           const row = document.createElement("div");
           row.className = "session-row" + (s.id === msg.activeSessionId ? " active" : "");
+          row.title = "Click to focus · Double-click title to rename";
           row.innerHTML =
             '<span class="dot"></span>' +
             '<span class="s-title">' + s.title + '</span>' +
             '<span class="s-folder">' + s.folderName + '</span>' +
             '<div class="row-actions">' +
+              '<button class="mini-btn act-rename" title="Rename">✎</button>' +
               '<button class="mini-btn act-send" title="Send @file:line">@</button>' +
               '<button class="mini-btn act-close" title="Close">✕</button>' +
             '</div>';
 
           row.addEventListener("click", () => {
             vscode.postMessage({ type: "focusSession", id: s.id });
+          });
+          row.querySelector(".s-title").addEventListener("dblclick", (e) => {
+            e.stopPropagation();
+            startInlineRename(row, s);
+          });
+          row.querySelector(".act-rename").addEventListener("click", (e) => {
+            e.stopPropagation();
+            startInlineRename(row, s);
           });
           row.querySelector(".act-send").addEventListener("click", (e) => {
             e.stopPropagation();
@@ -1063,6 +1267,12 @@ export function activate(context: vscode.ExtensionContext) {
           location: "editor",
         });
       }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("agentCockpit.renameSession", () => {
+      void provider.promptRenameSession();
     })
   );
 

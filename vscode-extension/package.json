@@ -43,6 +43,10 @@
         "title": "Agent Cockpit: Launch New CLI Agent Session…"
       },
       {
+        "command": "agentCockpit.renameSession",
+        "title": "Agent Cockpit: Rename Active Terminal Session…"
+      },
+      {
         "command": "agentCockpit.sendSelection",
         "title": "Agent Cockpit: Send @file:line Selection to Active Agent"
       },

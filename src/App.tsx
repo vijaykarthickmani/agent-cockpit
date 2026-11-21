@@ -24,6 +24,31 @@ export const App: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalInitialPreset, setModalInitialPreset] =
     useState<CliPreset | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState<string>("");
+
+  const handleRenameSession = useCallback((id: string, newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, title: trimmed } : s))
+    );
+  }, []);
+
+  const handleAutoTitle = useCallback((id: string, firstLine: string) => {
+    const cleaned = firstLine.replace(/\s+/g, " ").trim().slice(0, 26);
+    if (!cleaned) return;
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.id !== id) return s;
+        const isDefaultPresetName = DEFAULT_PRESETS.some(
+          (p) => p.label === s.title
+        );
+        if (!isDefaultPresetName) return s;
+        return { ...s, title: cleaned };
+      })
+    );
+  }, []);
 
   const registerCwd = useCallback((cwd: string) => {
     if (!cwd) return;
@@ -214,8 +239,54 @@ export const App: React.FC = () => {
                 title={`${s.title} — ${s.cwd}`}
               >
                 <span className={`status-indicator status-${s.status}`} />
-                <span className="session-title">{s.title}</span>
+                {editingSessionId === s.id ? (
+                  <input
+                    type="text"
+                    className="session-rename-input"
+                    value={editingTitle}
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onBlur={() => {
+                      handleRenameSession(s.id, editingTitle);
+                      setEditingSessionId(null);
+                    }}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === "Enter") {
+                        handleRenameSession(s.id, editingTitle);
+                        setEditingSessionId(null);
+                      } else if (e.key === "Escape") {
+                        setEditingSessionId(null);
+                      }
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="session-title"
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingSessionId(s.id);
+                      setEditingTitle(s.title);
+                    }}
+                    title="Double-click to rename"
+                  >
+                    {s.title}
+                  </span>
+                )}
                 <span className="session-folder">{folderName}</span>
+                <button
+                  type="button"
+                  className="session-close-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingSessionId(s.id);
+                    setEditingTitle(s.title);
+                  }}
+                  title="Rename"
+                >
+                  ✎
+                </button>
                 <button
                   type="button"
                   className="session-close-btn"
@@ -248,6 +319,7 @@ export const App: React.FC = () => {
               session={session}
               isActive={session.id === activeSessionId}
               onStatusChange={handleStatusChange}
+              onAutoTitle={handleAutoTitle}
             />
           ))
         )}

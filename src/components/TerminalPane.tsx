@@ -14,6 +14,7 @@ interface TerminalPaneProps {
     status: RuntimeStatus,
     exitCode?: number | null
   ) => void;
+  onAutoTitle?: (id: string, firstLine: string) => void;
 }
 
 interface ResolvedCommand {
@@ -37,12 +38,15 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
   session,
   isActive,
   onStatusChange,
+  onAutoTitle,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const ptyRef = useRef<IPty | null>(null);
   const idleTimerRef = useRef<number | null>(null);
+  const firstInputBufferRef = useRef<string>("");
+  const hasAutoTitledRef = useRef<boolean>(false);
   const [spawnError, setSpawnError] = useState<string | null>(null);
   const [restartCount, setRestartCount] = useState(0);
 
@@ -196,6 +200,24 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
         termInputDisposable = term.onData((input) => {
           try {
             pty?.write(input);
+            if (!hasAutoTitledRef.current && onAutoTitle) {
+              for (const ch of input) {
+                if (ch === "\r" || ch === "\n") {
+                  const candidate = firstInputBufferRef.current.trim();
+                  if (candidate.length >= 2) {
+                    hasAutoTitledRef.current = true;
+                    onAutoTitle(session.id, candidate);
+                  } else {
+                    firstInputBufferRef.current = "";
+                  }
+                } else if (ch === "\x7f" || ch === "\b") {
+                  firstInputBufferRef.current =
+                    firstInputBufferRef.current.slice(0, -1);
+                } else if (ch >= " " && ch <= "~") {
+                  firstInputBufferRef.current += ch;
+                }
+              }
+            }
           } catch (err) {
             console.error("Failed writing to PTY:", err);
           }
