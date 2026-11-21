@@ -1128,6 +1128,182 @@ function extractTranscriptSummaryForHandoff(session: CockpitSession): {
   return { userPrompts: [], assistantReplies: [], sourceFound: false };
 }
 
+interface ChatTimelineEntry {
+  turn: number;
+  question: string;
+  fullQuestion: string;
+  replyPreview?: string;
+  timeLabel?: string;
+}
+
+function formatIsoTimeShort(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return undefined;
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function extractSessionTimeline(
+  session?: CockpitSession
+): ChatTimelineEntry[] {
+  if (!session || !session.cliSessionId) return [];
+  const entries: ChatTimelineEntry[] = [];
+  const cmd = (session.command || "").trim().toLowerCase();
+  const home = os.homedir();
+
+  // 1. Antigravity (agy) transcript
+  if (cmd === "agy" || cmd === "agy.cmd" || cmd === "agy.exe") {
+    const transcriptPath = path.join(
+      home,
+      ".gemini",
+      "antigravity-cli",
+      "brain",
+      session.cliSessionId,
+      ".system_generated",
+      "logs",
+      "transcript.jsonl"
+    );
+    if (!fs.existsSync(transcriptPath)) return [];
+    try {
+      const lines = fs
+        .readFileSync(transcriptPath, "utf8")
+        .split(/\r?\n/)
+        .filter((l) => l.trim());
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          if (
+            (obj.source === "USER_EXPLICIT" || obj.type === "USER_INPUT") &&
+            typeof obj.content === "string"
+          ) {
+            const m = obj.content.match(
+              /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/
+            );
+            const full = (m ? m[1] : obj.content).trim();
+            const single = full.replace(/\s+/g, " ").trim();
+            if (single) {
+              entries.push({
+                turn: entries.length + 1,
+                question: single.slice(0, 140),
+                fullQuestion: full,
+                timeLabel: formatIsoTimeShort(obj.timestamp || obj.created_at),
+              });
+            }
+          } else if (
+            obj.source === "MODEL" &&
+            typeof obj.content === "string" &&
+            obj.content.trim() &&
+            entries.length > 0
+          ) {
+            const last = entries[entries.length - 1];
+            last.replyPreview = obj.content
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 160);
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return entries;
+    } catch {
+      return [];
+    }
+  }
+
+  // 2. Claude Code transcript
+  if (cmd === "claude" || cmd === "claude.exe") {
+    const projectsRoot = path.join(home, ".claude", "projects");
+    let jsonlPath = path.join(
+      projectsRoot,
+      claudeProjectSlug(session.cwd),
+      `${session.cliSessionId}.jsonl`
+    );
+    if (!fs.existsSync(jsonlPath) && fs.existsSync(projectsRoot)) {
+      try {
+        for (const dir of fs.readdirSync(projectsRoot)) {
+          const candidate = path.join(
+            projectsRoot,
+            dir,
+            `${session.cliSessionId}.jsonl`
+          );
+          if (fs.existsSync(candidate)) {
+            jsonlPath = candidate;
+            break;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (!fs.existsSync(jsonlPath)) return [];
+    try {
+      const lines = fs
+        .readFileSync(jsonlPath, "utf8")
+        .split(/\r?\n/)
+        .filter((l) => l.trim());
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.type === "user" && obj.message?.role === "user") {
+            const rawContent = obj.message.content;
+            const isToolResult =
+              Array.isArray(rawContent) &&
+              rawContent.some(
+                (p: { type?: string }) => p && p.type === "tool_result"
+              );
+            if (!isToolResult) {
+              let full = "";
+              if (typeof rawContent === "string") {
+                full = rawContent;
+              } else if (Array.isArray(rawContent)) {
+                const textPart = rawContent.find(
+                  (p: { type?: string; text?: string }) =>
+                    p && p.type === "text" && typeof p.text === "string"
+                );
+                if (textPart) full = textPart.text;
+              }
+              const single = full.replace(/\s+/g, " ").trim();
+              if (single) {
+                entries.push({
+                  turn: entries.length + 1,
+                  question: single.slice(0, 140),
+                  fullQuestion: full.trim(),
+                  timeLabel: formatIsoTimeShort(obj.timestamp),
+                });
+              }
+            }
+          } else if (
+            obj.type === "assistant" &&
+            obj.message?.role === "assistant" &&
+            Array.isArray(obj.message.content) &&
+            entries.length > 0
+          ) {
+            const textPart = obj.message.content.find(
+              (p: { type?: string; text?: string }) =>
+                p && p.type === "text" && typeof p.text === "string"
+            );
+            if (textPart && textPart.text.trim()) {
+              const last = entries[entries.length - 1];
+              last.replyPreview = textPart.text
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 160);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return entries;
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
 function summarizeFirstLine(raw: string, label: string): string | null {
   const firstLine = raw
     .split(/\r?\n/)
@@ -2095,6 +2271,31 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             await this.refreshWebviewState();
           }
           break;
+        case "jumpToTimelineEntry":
+          if (typeof msg.question === "string" && msg.question.trim()) {
+            const snippet = msg.question.trim().slice(0, 40);
+            await vscode.env.clipboard.writeText(snippet);
+            if (this._activeSessionId) {
+              await this.focusOrRelaunchSessionById(this._activeSessionId);
+            }
+            try {
+              await vscode.commands.executeCommand(
+                "workbench.action.terminal.focusFind"
+              );
+            } catch {
+              // ignore
+            }
+            vscode.window.setStatusBarMessage(
+              `Timeline: Copied "${snippet}" — press Ctrl+V + Enter in Terminal Find to jump`,
+              4500
+            );
+          }
+          break;
+        case "reaskTimelineEntry":
+          if (typeof msg.question === "string" && msg.question.trim()) {
+            await this.sendTextToActiveAgent(msg.question.trim(), false);
+          }
+          break;
         case "refreshGit":
           this._syncCliStoredSessionNames();
           await this.refreshWebviewState();
@@ -2936,6 +3137,11 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       this._latestSnippets ||
       [];
 
+    const activeSessionObj =
+      this._sessions.find((s) => s.id === this._activeSessionId) ||
+      this._sessions[this._sessions.length - 1];
+    const activeTimeline = extractSessionTimeline(activeSessionObj);
+
     this._view.webview.postMessage({
       type: "state",
       currentCwd: this._currentCwd,
@@ -2945,6 +3151,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       soundEnabled: this._soundEnabled,
       lastUsedCliId: validLastCliId,
       activeSessionId: this._activeSessionId,
+      activeSessionTitle: activeSessionObj?.title || "",
+      activeTimeline,
       presets: installedPresets,
       gitBranch: gitInfo.branch,
       gitChanges: gitInfo.changes,
@@ -3538,8 +3746,77 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     }
     .footer-tabs {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 4px;
+    }
+    .timeline-header {
+      font-size: 9.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--md-muted);
+      padding: 2px 3px 4px 3px;
+      border-bottom: 1px solid var(--md-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .timeline-item {
+      position: relative;
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      padding: 5px 6px 5px 10px;
+      border-left: 2px solid var(--md-border-strong);
+      margin-left: 5px;
+      border-radius: 0 6px 6px 0;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .timeline-item:hover {
+      background: var(--md-surface-hover);
+      border-left-color: var(--md-primary);
+    }
+    .timeline-dot {
+      position: absolute;
+      left: -5px;
+      top: 9px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--md-primary);
+      border: 2px solid var(--md-surface);
+    }
+    .timeline-body {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .timeline-q {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--md-fg);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      line-height: 1.3;
+    }
+    .timeline-meta {
+      font-size: 9.5px;
+      color: var(--md-muted);
+      display: flex;
+      gap: 6px;
+    }
+    .timeline-actions {
+      display: none;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+    .timeline-item:hover .timeline-actions {
+      display: flex;
     }
     .footer-btn {
       background: var(--md-surface);
@@ -3659,11 +3936,13 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
   <!-- Material Footer -->
   <div class="footer-bar">
+    <div id="outline-drawer" class="drawer-pane"></div>
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
     <div id="jobs-drawer" class="drawer-pane"></div>
 
     <div class="footer-tabs">
+      <button id="tab-outline" class="footer-btn" title="Question timeline / outline for the selected chat">Outline (<span id="outline-count">0</span>)</button>
       <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
       <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
       <button id="tab-jobs" class="footer-btn" title="Manage automated scheduled CLI jobs">Jobs (<span id="jobs-count">0</span>)</button>
@@ -3725,14 +4004,17 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const customGo = document.getElementById("custom-go");
     const sessionList = document.getElementById("session-list");
 
+    const outlineDrawer = document.getElementById("outline-drawer");
     const mcpDrawer = document.getElementById("mcp-drawer");
     const skillsDrawer = document.getElementById("skills-drawer");
     const jobsDrawer = document.getElementById("jobs-drawer");
 
+    const outlineCount = document.getElementById("outline-count");
     const mcpCount = document.getElementById("mcp-count");
     const skillsCount = document.getElementById("skills-count");
     const jobsCount = document.getElementById("jobs-count");
 
+    const tabOutline = document.getElementById("tab-outline");
     const tabMcp = document.getElementById("tab-mcp");
     const tabSkills = document.getElementById("tab-skills");
     const tabJobs = document.getElementById("tab-jobs");
@@ -3748,19 +4030,22 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
     function setFooterDrawer(which) {
       state.activeFooter = state.activeFooter === which ? null : which;
+      outlineDrawer.classList.toggle("open", state.activeFooter === "outline");
       mcpDrawer.classList.toggle("open", state.activeFooter === "mcp");
       skillsDrawer.classList.toggle("open", state.activeFooter === "skills");
       jobsDrawer.classList.toggle("open", state.activeFooter === "jobs");
 
+      tabOutline.classList.toggle("active", state.activeFooter === "outline");
       tabMcp.classList.toggle("active", state.activeFooter === "mcp");
       tabSkills.classList.toggle("active", state.activeFooter === "skills");
       tabJobs.classList.toggle("active", state.activeFooter === "jobs");
 
-      if (state.activeFooter === "mcp") {
+      if (state.activeFooter === "mcp" || state.activeFooter === "outline") {
         vscode.postMessage({ type: "refreshGit" });
       }
     }
 
+    tabOutline.addEventListener("click", () => setFooterDrawer("outline"));
     tabMcp.addEventListener("click", () => setFooterDrawer("mcp"));
     tabSkills.addEventListener("click", () => setFooterDrawer("skills"));
     tabJobs.addEventListener("click", () => setFooterDrawer("jobs"));
@@ -4070,6 +4355,73 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         }
 
         regularSessions.forEach((s) => sessionList.appendChild(renderSessionCard(s)));
+      }
+
+      // Render Chat Question Timeline / Outline for Selected Session
+      const timeline = msg.activeTimeline || [];
+      outlineCount.textContent = String(timeline.length);
+      outlineDrawer.innerHTML = "";
+      const tlHeader = document.createElement("div");
+      tlHeader.className = "timeline-header";
+      tlHeader.innerHTML =
+        '<span>Timeline: ' + (msg.activeSessionTitle || "No chat selected") + '</span>' +
+        '<span>' + timeline.length + ' Qs</span>';
+      outlineDrawer.appendChild(tlHeader);
+
+      if (timeline.length === 0) {
+        const emptyTl = document.createElement("div");
+        emptyTl.style.cssText = "color:var(--md-muted);text-align:center;padding:8px 0;font-size:10.5px;";
+        emptyTl.textContent = "No user questions recorded yet for this chat";
+        outlineDrawer.appendChild(emptyTl);
+      } else {
+        timeline.forEach((item) => {
+          const row = document.createElement("div");
+          row.className = "timeline-item";
+          row.title =
+            "#" +
+            item.turn +
+            ": " +
+            item.fullQuestion +
+            (item.replyPreview ? "\n\nAI: " + item.replyPreview : "") +
+            "\n\nClick to find in terminal";
+
+          row.innerHTML =
+            '<span class="timeline-dot"></span>' +
+            '<div class="timeline-body">' +
+              '<div class="timeline-meta">' +
+                '<span>#' + item.turn + '</span>' +
+                (item.timeLabel ? '<span>' + item.timeLabel + '</span>' : '') +
+              '</div>' +
+              '<div class="timeline-q"></div>' +
+            '</div>' +
+            '<div class="timeline-actions">' +
+              '<button class="icon-action tl-copy" title="Copy full question">📋</button>' +
+              '<button class="icon-action tl-reask" title="Insert into active terminal">↻</button>' +
+            '</div>';
+          row.querySelector(".timeline-q").textContent = item.question;
+
+          row.addEventListener("click", () => {
+            vscode.postMessage({
+              type: "jumpToTimelineEntry",
+              question: item.fullQuestion,
+            });
+          });
+          row.querySelector(".tl-copy").addEventListener("click", (e) => {
+            e.stopPropagation();
+            vscode.postMessage({
+              type: "copyToClipboard",
+              text: item.fullQuestion,
+            });
+          });
+          row.querySelector(".tl-reask").addEventListener("click", (e) => {
+            e.stopPropagation();
+            vscode.postMessage({
+              type: "reaskTimelineEntry",
+              question: item.fullQuestion,
+            });
+          });
+          outlineDrawer.appendChild(row);
+        });
       }
 
       // Render MCP Servers & Status
