@@ -833,7 +833,6 @@ class AgentCockpitProvider {
     }
     /**
      * Plays an audio notification chime when an AI agent finishes a response or requests approval.
-     * Uses both the Webview's Web Audio API synthesizer AND a native Windows sound fallback.
      */
     _triggerNotificationSound(kind, sessionTitle) {
         if (!this._soundEnabled)
@@ -844,13 +843,6 @@ class AgentCockpitProvider {
                 kind,
                 sessionTitle,
             });
-        }
-        // Native OS chime fallback in case the webview AudioContext hasn't received a user click yet
-        if (process.platform === "win32") {
-            const soundExpr = kind === "approval"
-                ? "[System.Media.SystemSounds]::Exclamation.Play()"
-                : "[System.Media.SystemSounds]::Asterisk.Play()";
-            (0, child_process_1.execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", soundExpr], { timeout: 2500 }, () => { });
         }
     }
     async _toggleTopEditorTabBar() {
@@ -2143,7 +2135,6 @@ class AgentCockpitProvider {
     });
 
     soundToggle.addEventListener("click", () => {
-      playWebAudioChime("complete");
       vscode.postMessage({ type: "toggleSound" });
     });
 
