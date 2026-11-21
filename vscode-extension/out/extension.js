@@ -386,7 +386,8 @@ function discoverAgySessions(defaultCwd) {
         let title = null;
         let mtimeMs = 0;
         let runtimeHint = "idle";
-        let lastAssistantTurnId;
+        let lastUserTurnId;
+        let isTurnComplete = false;
         const pbtxtPath = path.join(annotationsDir, `${convId}.pbtxt`);
         if (fs.existsSync(pbtxtPath)) {
             try {
@@ -407,34 +408,46 @@ function discoverAgySessions(defaultCwd) {
             try {
                 const stat = fs.statSync(transcriptPath);
                 mtimeMs = Math.max(mtimeMs, stat.mtimeMs);
+                const quietMs = now - stat.mtimeMs;
                 const content = fs.readFileSync(transcriptPath, "utf8");
                 const lines = content.split(/\r?\n/).filter((l) => l.trim());
-                if (!title && lines.length > 0) {
-                    const obj = JSON.parse(lines[0]);
-                    if (typeof obj.content === "string") {
-                        const reqMatch = obj.content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
-                        const candidate = (reqMatch ? reqMatch[1] : obj.content).trim();
-                        if (candidate) {
-                            title = candidate.replace(/\s+/g, " ").slice(0, 32);
+                for (let i = 0; i < lines.length; i++) {
+                    try {
+                        const obj = JSON.parse(lines[i]);
+                        if (i === 0 && !title && typeof obj.content === "string") {
+                            const reqMatch = obj.content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
+                            const candidate = (reqMatch ? reqMatch[1] : obj.content).trim();
+                            if (candidate) {
+                                title = candidate.replace(/\s+/g, " ").slice(0, 32);
+                            }
                         }
+                        if (obj.source === "USER_EXPLICIT" || obj.type === "USER_INPUT") {
+                            lastUserTurnId = `${convId}:u:${obj.step_index ?? i}`;
+                        }
+                    }
+                    catch {
+                        // ignore
                     }
                 }
                 if (lines.length > 0) {
                     const lastObj = JSON.parse(lines[lines.length - 1]);
-                    if (lastObj.source === "MODEL" &&
+                    const isFinalModelResponse = lastObj.source === "MODEL" &&
                         lastObj.type === "PLANNER_RESPONSE" &&
-                        lastObj.status === "DONE") {
-                        lastAssistantTurnId = `${convId}:${lastObj.step_index ?? lines.length}`;
+                        lastObj.status === "DONE" &&
+                        !lastObj.tool_calls;
+                    // Only mark complete after transcript has been quiet for >= 4.5s after a final response
+                    if (isFinalModelResponse && quietMs >= 4500) {
+                        isTurnComplete = true;
+                        if (typeof lastObj.content === "string" &&
+                            /\?\s*$|\[y\/n\]|approve|allow/i.test(lastObj.content.slice(-200))) {
+                            runtimeHint = "needs-input";
+                        }
+                        else {
+                            runtimeHint = "idle";
+                        }
                     }
-                    if (now - stat.mtimeMs < 4000 &&
-                        !(lastObj.source === "MODEL" &&
-                            lastObj.type === "PLANNER_RESPONSE" &&
-                            lastObj.status === "DONE")) {
+                    else if (quietMs < 8000) {
                         runtimeHint = "working";
-                    }
-                    else if (typeof lastObj.content === "string" &&
-                        /\?\s*$|\[y\/n\]|approve|allow/i.test(lastObj.content.slice(-200))) {
-                        runtimeHint = "needs-input";
                     }
                 }
             }
@@ -449,7 +462,8 @@ function discoverAgySessions(defaultCwd) {
                 cwd: defaultCwd,
                 mtimeMs: mtimeMs || now,
                 runtimeHint,
-                lastAssistantTurnId,
+                lastUserTurnId,
+                isTurnComplete,
                 agentType: "agy",
             });
         }
@@ -461,12 +475,13 @@ function parseClaudeJsonlMeta(filePath) {
     let customTitle = null;
     let firstUserPrompt = null;
     let detectedCwd = null;
-    let lastRole = null;
+    let lastUserTurnId;
+    let isTurnComplete = false;
     let lastText = "";
-    let lastAssistantTurnId;
+    let hasPendingToolUse = false;
     try {
         const stat = fs.statSync(filePath);
-        const isVeryRecent = Date.now() - stat.mtimeMs < 3500;
+        const quietMs = Date.now() - stat.mtimeMs;
         const content = fs.readFileSync(filePath, "utf8");
         const lines = content.split(/\r?\n/);
         for (const line of lines) {
@@ -492,32 +507,45 @@ function parseClaudeJsonlMeta(filePath) {
                     customTitle = obj.sessionName.trim();
                 }
                 else if (obj.type === "user" && obj.message?.role === "user") {
-                    lastRole = "user";
+                    // Only count actual human typed prompts (not tool_result messages) as a new user turn
                     const rawContent = obj.message.content;
-                    if (!firstUserPrompt) {
-                        if (typeof rawContent === "string" && rawContent.trim()) {
-                            firstUserPrompt = rawContent.trim();
-                        }
-                        else if (Array.isArray(rawContent)) {
-                            const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
-                            if (textPart && textPart.text.trim()) {
-                                firstUserPrompt = textPart.text.trim();
+                    const isToolResult = Array.isArray(rawContent) &&
+                        rawContent.some((p) => p && p.type === "tool_result");
+                    if (!isToolResult) {
+                        lastUserTurnId = `${sessionId}:u:${obj.uuid || obj.timestamp || ""}`;
+                        isTurnComplete = false;
+                        hasPendingToolUse = false;
+                        if (!firstUserPrompt) {
+                            if (typeof rawContent === "string" && rawContent.trim()) {
+                                firstUserPrompt = rawContent.trim();
+                            }
+                            else if (Array.isArray(rawContent)) {
+                                const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
+                                if (textPart && textPart.text.trim()) {
+                                    firstUserPrompt = textPart.text.trim();
+                                }
                             }
                         }
                     }
                 }
                 else if (obj.type === "assistant" &&
                     obj.message?.role === "assistant") {
-                    lastRole = "assistant";
-                    if (typeof obj.uuid === "string") {
-                        lastAssistantTurnId = obj.uuid;
-                    }
                     const rawContent = obj.message.content;
                     if (Array.isArray(rawContent)) {
                         const toolUse = rawContent.find((p) => p && p.type === "tool_use");
                         const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
-                        lastText = toolUse ? "[tool_use]" : textPart?.text || "";
+                        hasPendingToolUse = Boolean(toolUse);
+                        lastText = textPart?.text || "";
+                        if (!toolUse && obj.message.stop_reason === "end_turn") {
+                            isTurnComplete = true;
+                        }
                     }
+                }
+                else if ((obj.type === "system" && obj.subtype === "turn_duration") ||
+                    obj.type === "last-prompt") {
+                    // Claude writes turn_duration and last-prompt only when the entire agentic loop finishes!
+                    isTurnComplete = true;
+                    hasPendingToolUse = false;
                 }
             }
             catch {
@@ -525,11 +553,11 @@ function parseClaudeJsonlMeta(filePath) {
             }
         }
         let runtimeHint = "idle";
-        if (lastRole === "user" && isVeryRecent) {
-            runtimeHint = "working";
+        if (!isTurnComplete && quietMs < 12000) {
+            runtimeHint =
+                hasPendingToolUse && quietMs >= 3500 ? "needs-input" : "working";
         }
-        else if (lastText === "[tool_use]" ||
-            /\?\s*$|\[y\/n\]|approve|allow/i.test(lastText.slice(-180))) {
+        else if (/\?\s*$|\[y\/n\]|approve|allow/i.test(lastText.slice(-180))) {
             runtimeHint = "needs-input";
         }
         const chosen = customTitle || firstUserPrompt;
@@ -541,7 +569,8 @@ function parseClaudeJsonlMeta(filePath) {
             title: cleaned,
             cwd: detectedCwd,
             runtimeHint,
-            lastAssistantTurnId,
+            lastUserTurnId,
+            isTurnComplete: isTurnComplete && quietMs >= 2500,
         };
     }
     catch {
@@ -550,6 +579,7 @@ function parseClaudeJsonlMeta(filePath) {
             title: null,
             cwd: null,
             runtimeHint: "idle",
+            isTurnComplete: false,
         };
     }
 }
@@ -590,7 +620,8 @@ function discoverClaudeSessionsForCwd(cwd) {
                         cwd: meta.cwd || cwd,
                         mtimeMs: stat.mtimeMs,
                         runtimeHint: meta.runtimeHint,
-                        lastAssistantTurnId: meta.lastAssistantTurnId,
+                        lastUserTurnId: meta.lastUserTurnId,
+                        isTurnComplete: meta.isTurnComplete,
                         agentType: "claude",
                     });
                 }
@@ -821,11 +852,7 @@ class AgentCockpitProvider {
                 if (!sess)
                     return;
                 if (isTerminalAlive(sess.terminal)) {
-                    const wasWorking = sess.status === "working";
                     sess.status = "idle";
-                    if (wasWorking) {
-                        this._triggerNotificationSound("complete", sess.title);
-                    }
                     void this.refreshWebviewState();
                 }
             }));
@@ -864,23 +891,30 @@ class AgentCockpitProvider {
         const applyDiscovered = (match, disc) => {
             match.cliSessionName = disc.title;
             if (isTerminalAlive(match.terminal)) {
-                const prevStatus = match.status;
-                const prevTurnId = match.lastAssistantTurnId;
-                if (disc.lastAssistantTurnId &&
-                    prevTurnId &&
-                    disc.lastAssistantTurnId !== prevTurnId) {
-                    match.lastAssistantTurnId = disc.lastAssistantTurnId;
+                // Initialize turn tracking without chiming on existing historical turns
+                if (!match.lastUserTurnId && disc.lastUserTurnId) {
+                    match.lastUserTurnId = disc.lastUserTurnId;
+                    if (disc.isTurnComplete) {
+                        match.lastNotifiedUserTurnId = disc.lastUserTurnId;
+                    }
+                }
+                else if (disc.lastUserTurnId &&
+                    disc.lastUserTurnId !== match.lastUserTurnId) {
+                    // A new human prompt was submitted!
+                    match.lastUserTurnId = disc.lastUserTurnId;
+                }
+                // Chime AT MOST ONCE per user prompt, and ONLY when the entire agentic turn is complete!
+                const now = Date.now();
+                if (disc.isTurnComplete &&
+                    disc.lastUserTurnId &&
+                    match.lastNotifiedUserTurnId !== disc.lastUserTurnId &&
+                    now - (match.lastChimeAt || 0) > 8000) {
+                    match.lastNotifiedUserTurnId = disc.lastUserTurnId;
+                    match.lastChimeAt = now;
                     this._triggerNotificationSound(disc.runtimeHint === "needs-input" ? "approval" : "complete", match.title);
                     changed = true;
                 }
-                else if (disc.lastAssistantTurnId && !prevTurnId) {
-                    match.lastAssistantTurnId = disc.lastAssistantTurnId;
-                }
-                if (prevStatus !== disc.runtimeHint) {
-                    if (prevStatus === "working" &&
-                        (disc.runtimeHint === "idle" || disc.runtimeHint === "needs-input")) {
-                        this._triggerNotificationSound(disc.runtimeHint === "needs-input" ? "approval" : "complete", match.title);
-                    }
+                if (match.status !== disc.runtimeHint) {
                     match.status = disc.runtimeHint;
                     changed = true;
                 }
@@ -910,7 +944,10 @@ class AgentCockpitProvider {
                     disc.mtimeMs >= s.createdAt - 15000);
                 if (match) {
                     match.cliSessionId = disc.cliSessionId;
-                    match.lastAssistantTurnId = disc.lastAssistantTurnId;
+                    match.lastUserTurnId = disc.lastUserTurnId;
+                    if (disc.isTurnComplete) {
+                        match.lastNotifiedUserTurnId = disc.lastUserTurnId;
+                    }
                     changed = true;
                 }
             }
@@ -1070,12 +1107,16 @@ class AgentCockpitProvider {
                     await this._openGitDiffForFile(msg.file);
                     break;
                 case "saveHandoff":
-                    this._saveHandoffContent(msg.content || "");
+                    await this._saveHandoffContent(msg.content || "");
                     break;
-                case "sendHandoff":
-                    this._saveHandoffContent(msg.content || "");
-                    await this.sendTextToActiveAgent("Read .agent/handoff.md and continue.", false);
+                case "sendHandoff": {
+                    const finalHandoff = await this._saveHandoffContent(msg.content || "", true);
+                    await this.sendTextToActiveAgent(`Please read .agent/handoff.md and continue from there.`, true);
+                    if (finalHandoff) {
+                        await this.refreshWebviewState();
+                    }
                     break;
+                }
                 case "refreshGit":
                     this._syncCliStoredSessionNames();
                     await this.refreshWebviewState();
@@ -1423,17 +1464,54 @@ class AgentCockpitProvider {
         }
         return "";
     }
-    _saveHandoffContent(content) {
+    async _saveHandoffContent(content, autoGenerateIfEmpty = false) {
         const p = this._getHandoffPath();
+        let textToWrite = content.trim();
+        if (!textToWrite && autoGenerateIfEmpty) {
+            const existing = this._readHandoffContent().trim();
+            if (existing) {
+                textToWrite = existing;
+            }
+            else {
+                const gitInfo = await this._getGitChanges(this._currentCwd);
+                const sessionLines = this._sessions
+                    .map((s) => `- [${s.badge}] ${s.title} (${s.status}) — cwd: ${s.cwd}`)
+                    .join("\n");
+                const gitLines = gitInfo.changes.length > 0
+                    ? gitInfo.changes.map((c) => `- ${c.status} ${c.file}`).join("\n")
+                    : "- Clean working tree";
+                textToWrite = [
+                    `# Agent Cockpit Handoff Context`,
+                    `Updated: ${new Date().toISOString()}`,
+                    `Workspace: ${this._currentCwd}`,
+                    gitInfo.branch ? `Branch: ${gitInfo.branch}` : "",
+                    ``,
+                    `## Active Agent Sessions`,
+                    sessionLines || "- None",
+                    ``,
+                    `## Modified / Untracked Files`,
+                    gitLines,
+                    ``,
+                    `## Next Task / Notes`,
+                    `- Review current changes and continue implementation.`,
+                ]
+                    .filter((l) => l !== undefined)
+                    .join("\n");
+            }
+        }
+        if (!textToWrite) {
+            return "";
+        }
         try {
             fs.mkdirSync(path.dirname(p), { recursive: true });
-            fs.writeFileSync(p, content, "utf8");
+            fs.writeFileSync(p, textToWrite + "\n", "utf8");
             vscode.window.setStatusBarMessage("Saved .agent/handoff.md", 2000);
         }
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             vscode.window.showErrorMessage(`Failed saving handoff.md: ${msg}`);
         }
+        return textToWrite;
     }
     async openHandoffInEditor() {
         const p = this._getHandoffPath();
