@@ -74,6 +74,12 @@ interface GitFileChange {
 
 const STORAGE_KEY = "agentCockpit.retainedSessions.v1";
 
+function isTerminalAlive(term?: vscode.Terminal): term is vscode.Terminal {
+  if (!term) return false;
+  if (term.exitStatus !== undefined) return false;
+  return vscode.window.terminals.includes(term);
+}
+
 function summarizeFirstLine(raw: string, label: string): string | null {
   const firstLine = raw
     .split(/\r?\n/)
@@ -88,13 +94,18 @@ function summarizeFirstLine(raw: string, label: string): string | null {
     lower === "codex" ||
     lower === "gemini" ||
     lower === "powershell" ||
-    lower === "powershell.exe"
+    lower === "powershell.exe" ||
+    lower.startsWith("claude --continue") ||
+    lower.startsWith("agy --resume") ||
+    lower.startsWith("gemini --resume") ||
+    lower.startsWith("codex resume")
   ) {
     return null;
   }
 
   const cleaned = firstLine.replace(/\s+/g, " ").slice(0, 26);
-  return `${label} · ${cleaned}`;
+  const baseLabel = label.split("·")[0].trim();
+  return `${baseLabel} · ${cleaned}`;
 }
 
 function execGit(cwd: string, args: string[]): Promise<string> {
@@ -109,29 +120,64 @@ function execGit(cwd: string, args: string[]): Promise<string> {
   });
 }
 
-function findExecutableOnWindows(cmd: string): {
-  shellPath?: string;
-  shellArgs?: string[];
+function buildShellLaunch(
+  cmd: string,
+  args: string[],
+  isResume: boolean
+): {
+  shellPath: string;
+  shellArgs: string[];
   initialCommand?: string;
 } {
   const trimmed = cmd.trim();
-  if (
-    trimmed.toLowerCase() === "powershell.exe" ||
-    trimmed.toLowerCase() === "powershell"
-  ) {
+  const lower = trimmed.toLowerCase();
+  const extraArgs = args.length > 0 ? ` ${args.join(" ")}` : "";
+
+  if (lower === "powershell.exe" || lower === "powershell") {
     return {
       shellPath: "powershell.exe",
       shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
     };
   }
-  if (trimmed.toLowerCase() === "cmd.exe" || trimmed.toLowerCase() === "cmd") {
+  if (lower === "cmd.exe" || lower === "cmd") {
     return { shellPath: "cmd.exe", shellArgs: [] };
+  }
+
+  if (isResume) {
+    if (lower === "claude" || lower === "claude.exe") {
+      return {
+        shellPath: "powershell.exe",
+        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        initialCommand: `claude --continue${extraArgs}; if ($LASTEXITCODE -ne 0) { claude${extraArgs} }`,
+      };
+    }
+    if (lower === "agy" || lower === "agy.cmd" || lower === "agy.exe") {
+      return {
+        shellPath: "powershell.exe",
+        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        initialCommand: `agy --resume latest${extraArgs}; if ($LASTEXITCODE -ne 0) { agy${extraArgs} }`,
+      };
+    }
+    if (lower === "gemini" || lower === "gemini.cmd") {
+      return {
+        shellPath: "powershell.exe",
+        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        initialCommand: `gemini --resume latest${extraArgs}; if ($LASTEXITCODE -ne 0) { gemini${extraArgs} }`,
+      };
+    }
+    if (lower === "codex" || lower === "codex.cmd") {
+      return {
+        shellPath: "powershell.exe",
+        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        initialCommand: `codex resume --last${extraArgs}; if ($LASTEXITCODE -ne 0) { codex${extraArgs} }`,
+      };
+    }
   }
 
   return {
     shellPath: "powershell.exe",
     shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-    initialCommand: trimmed,
+    initialCommand: `${trimmed}${extraArgs}`,
   };
 }
 
@@ -148,7 +194,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this._currentCwd = wsFolder || "D:\\Thulir Inc";
 
-    // Restore retained sessions from persistent storage
     const saved =
       this._context.globalState.get<StoredSessionMeta[]>(STORAGE_KEY) || [];
     this._sessions = saved.map((meta) => ({
@@ -160,15 +205,20 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       this._activeSessionId = this._sessions[this._sessions.length - 1].id;
     }
 
-    // When a terminal tab is closed by the user, RETAIN the session in the list as "stopped"
-    // so they can click it anytime to relaunch/resume!
     vscode.window.onDidCloseTerminal((closedTerm) => {
-      const found = this._sessions.find((s) => s.terminal === closedTerm);
-      if (found) {
-        found.terminal = undefined;
-        found.status = "stopped";
+      let changed = false;
+      for (const s of this._sessions) {
+        if (s.terminal === closedTerm || !isTerminalAlive(s.terminal)) {
+          if (s.status !== "stopped" || s.terminal !== undefined) {
+            s.terminal = undefined;
+            s.status = "stopped";
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
         this._persistSessions();
-        this.refreshWebviewState();
+        void this.refreshWebviewState();
       }
     });
 
@@ -178,7 +228,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       if (found && found.id !== this._activeSessionId) {
         this._activeSessionId = found.id;
         this._currentCwd = found.cwd;
-        this.refreshWebviewState();
+        void this.refreshWebviewState();
       }
     });
 
@@ -203,6 +253,17 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           }
         })
       );
+    }
+  }
+
+  private _syncLiveness() {
+    for (const s of this._sessions) {
+      if (isTerminalAlive(s.terminal)) {
+        s.status = "running";
+      } else {
+        s.terminal = undefined;
+        s.status = "stopped";
+      }
     }
   }
 
@@ -264,7 +325,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           await this.focusOrRelaunchSessionById(msg.id);
           break;
         case "relaunchSession":
-          await this.relaunchSessionById(msg.id);
+          await this.relaunchSessionById(msg.id, true);
           break;
         case "renameSession":
           if (typeof msg.id === "string" && typeof msg.title === "string") {
@@ -324,11 +385,12 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     command: string,
     args: string[],
     cwd: string,
-    location: "editor" | "panel"
+    location: "editor" | "panel",
+    isResume: boolean
   ): vscode.Terminal {
     const folderShort = path.basename(cwd) || cwd;
     const termName = `${title} · ${folderShort}`;
-    const resolved = findExecutableOnWindows(command);
+    const resolved = buildShellLaunch(command, args, isResume);
 
     const terminalLocation =
       location === "editor"
@@ -346,11 +408,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     terminal.show(false);
 
     if (resolved.initialCommand) {
-      const fullCmd =
-        args.length > 0
-          ? `${resolved.initialCommand} ${args.join(" ")}`
-          : resolved.initialCommand;
-      terminal.sendText(fullCmd, true);
+      terminal.sendText(resolved.initialCommand, true);
     }
 
     return terminal;
@@ -418,7 +476,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       params.command,
       params.args,
       targetCwd,
-      params.location
+      params.location,
+      false
     );
 
     const id = `sess-${Date.now().toString(36)}-${Math.random()
@@ -459,7 +518,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     found.hasCustomTitle = true;
     this._persistSessions();
 
-    if (found.terminal && found.status === "running") {
+    if (isTerminalAlive(found.terminal)) {
       try {
         found.terminal.show(true);
         await vscode.commands.executeCommand(
@@ -516,21 +575,20 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     this._activeSessionId = found.id;
     this._currentCwd = found.cwd;
 
-    if (found.terminal && found.status === "running") {
+    if (isTerminalAlive(found.terminal)) {
+      found.status = "running";
       found.terminal.show(false);
+      await this.refreshWebviewState();
     } else {
-      // Session was retained after its terminal tab closed — relaunch it automatically!
-      await this.relaunchSessionById(id);
-      return;
+      await this.relaunchSessionById(id, true);
     }
-    await this.refreshWebviewState();
   }
 
-  public async relaunchSessionById(id: string) {
+  public async relaunchSessionById(id: string, isResume = true) {
     const found = this._sessions.find((s) => s.id === id);
     if (!found) return;
 
-    if (found.terminal) {
+    if (found.terminal && isTerminalAlive(found.terminal)) {
       try {
         found.terminal.dispose();
       } catch {
@@ -544,7 +602,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       found.command,
       found.args,
       cwd,
-      found.location || this._defaultLocation
+      found.location || this._defaultLocation,
+      isResume
     );
     found.status = "running";
     this._activeSessionId = found.id;
@@ -557,7 +616,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const idx = this._sessions.findIndex((s) => s.id === id);
     if (idx === -1) return;
     const target = this._sessions[idx];
-    if (target.terminal) {
+    if (isTerminalAlive(target.terminal)) {
       try {
         target.terminal.dispose();
       } catch {
@@ -591,8 +650,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (!active.terminal || active.status === "stopped") {
-      await this.relaunchSessionById(active.id);
+    if (!isTerminalAlive(active.terminal)) {
+      await this.relaunchSessionById(active.id, true);
     }
 
     if (!active.hasCustomTitle) {
@@ -712,6 +771,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
   public async refreshWebviewState() {
     if (!this._view) return;
+    this._syncLiveness();
     const gitInfo = await this._getGitChanges(this._currentCwd);
     const handoffContent = this._readHandoffContent();
 
@@ -897,7 +957,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       border: 1.5px solid var(--md-surface);
     }
     .pip-running { background: #1e8e3e; }
-    .pip-stopped { background: #9aa0a6; }
+    .pip-stopped { background: #f29900; }
 
     /* Custom Command Card */
     .custom-drawer {
@@ -960,9 +1020,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       border-left: 4px solid var(--md-primary);
       background: var(--md-primary-bg);
     }
-    .session-card.stopped {
-      opacity: 0.82;
-    }
     .s-title {
       flex: 1;
       font-weight: 600;
@@ -981,6 +1038,16 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       font-weight: 500;
       color: var(--md-muted);
       background: rgba(128, 134, 139, 0.12);
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .resume-badge {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--md-primary);
+      background: var(--md-primary-bg);
+      border: 1px solid rgba(26, 115, 232, 0.35);
       padding: 2px 6px;
       border-radius: 4px;
       white-space: nowrap;
@@ -1374,7 +1441,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         presetButtons.appendChild(btn);
       });
 
-      // Material Session Cards (retained even when terminal tab is closed)
+      // Material Session Cards
       sessionList.innerHTML = "";
       if (!msg.sessions || msg.sessions.length === 0) {
         sessionList.innerHTML = '<div class="empty-card">Click an agent button above to launch a session</div>';
@@ -1387,7 +1454,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             (s.id === msg.activeSessionId ? " active" : "") +
             (isStopped ? " stopped" : "");
           card.title = isStopped
-            ? "Terminal closed — Click to relaunch · Double-click title to rename"
+            ? "Terminal closed — Click anywhere on card to resume session"
             : "Running — Click to focus · Double-click title to rename";
           card.innerHTML =
             '<span class="agent-dot" style="background:' + (s.color || "#1a73e8") + ';">' +
@@ -1395,30 +1462,25 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
               '<span class="state-pip ' + (isStopped ? "pip-stopped" : "pip-running") + '"></span>' +
             '</span>' +
             '<span class="s-title">' + s.title + '</span>' +
-            '<span class="s-folder">' + s.folderName + '</span>' +
+            (isStopped
+              ? '<span class="resume-badge">↻ Resume</span>'
+              : '<span class="s-folder">' + s.folderName + '</span>') +
             '<div class="row-actions">' +
-              (isStopped
-                ? '<button class="icon-action act-relaunch" title="Relaunch terminal">↻</button>'
-                : "") +
               '<button class="icon-action act-rename" title="Rename">✎</button>' +
               '<button class="icon-action act-send" title="Send @file:line">@</button>' +
               '<button class="icon-action danger act-delete" title="Remove session from list">✕</button>' +
             '</div>';
 
           card.addEventListener("click", () => {
-            vscode.postMessage({ type: "focusSession", id: s.id });
+            vscode.postMessage({
+              type: isStopped ? "relaunchSession" : "focusSession",
+              id: s.id,
+            });
           });
           card.querySelector(".s-title").addEventListener("dblclick", (e) => {
             e.stopPropagation();
             startInlineRename(card, s);
           });
-          const relaunchBtn = card.querySelector(".act-relaunch");
-          if (relaunchBtn) {
-            relaunchBtn.addEventListener("click", (e) => {
-              e.stopPropagation();
-              vscode.postMessage({ type: "relaunchSession", id: s.id });
-            });
-          }
           card.querySelector(".act-rename").addEventListener("click", (e) => {
             e.stopPropagation();
             startInlineRename(card, s);
