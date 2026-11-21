@@ -1414,13 +1414,15 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
-    /* Rich Slate Dark Theme by default (eliminates blinding white & makes status dots pop) */
-    :root {
-      --bg-shell: #0f141c;
+    /* Auto-adapt to VS Code theme: Light if Light Theme, Dark if Dark Theme */
+    :root,
+    body.vscode-dark,
+    body.vscode-high-contrast {
+      --bg-shell: var(--vscode-sideBar-background, #0f141c);
       --md-surface: #171f2c;
       --md-surface-hover: #1e293b;
-      --md-fg: #e2e8f0;
-      --md-muted: #94a3b8;
+      --md-fg: var(--vscode-foreground, #e2e8f0);
+      --md-muted: var(--vscode-descriptionForeground, #94a3b8);
       --md-border: #2a3649;
       --md-border-strong: #475569;
       --md-primary: #3b82f6;
@@ -1434,18 +1436,23 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       --st-stopped: #64748b;
     }
 
-    body.theme-light {
-      --bg-shell: #f1f5f9;
+    body.vscode-light,
+    body.vscode-high-contrast-light {
+      --bg-shell: var(--vscode-sideBar-background, #f3f4f6);
       --md-surface: #ffffff;
       --md-surface-hover: #f8fafc;
-      --md-fg: #0f172a;
-      --md-muted: #64748b;
+      --md-fg: var(--vscode-foreground, #0f172a);
+      --md-muted: var(--vscode-descriptionForeground, #64748b);
       --md-border: #cbd5e1;
       --md-border-strong: #94a3b8;
       --md-primary: #2563eb;
       --md-primary-bg: rgba(37, 99, 235, 0.1);
-      --md-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.07);
-      --md-shadow-md: 0 3px 6px rgba(15, 23, 42, 0.11);
+      --md-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.05);
+      --md-shadow-md: 0 3px 6px rgba(15, 23, 42, 0.12), 0 2px 4px rgba(15, 23, 42, 0.07);
+      --st-working: #16a34a;
+      --st-needs-input: #d97706;
+      --st-idle: #0284c7;
+      --st-stopped: #94a3b8;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1870,9 +1877,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     <button id="wt-toggle" class="chip-btn" title="Isolate next session in a new Git Worktree">
       WT
     </button>
-    <button id="theme-toggle" class="chip-btn" title="Toggle Dark Slate vs Light sidebar theme">
-      🌙
-    </button>
   </div>
 
   <!-- Material Agent Launch Buttons -->
@@ -1932,7 +1936,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const branchTag = document.getElementById("branch-tag");
     const zenTabsToggle = document.getElementById("zen-tabs-toggle");
     const wtToggle = document.getElementById("wt-toggle");
-    const themeToggle = document.getElementById("theme-toggle");
     const presetButtons = document.getElementById("preset-buttons");
     const customToggle = document.getElementById("custom-toggle");
     const customDrawer = document.getElementById("custom-drawer");
@@ -1959,12 +1962,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     wtToggle.addEventListener("click", () => {
       state.useWorktree = !state.useWorktree;
       wtToggle.classList.toggle("active", state.useWorktree);
-    });
-
-    themeToggle.addEventListener("click", () => {
-      state.lightMode = !state.lightMode;
-      document.body.classList.toggle("theme-light", state.lightMode);
-      themeToggle.textContent = state.lightMode ? "☀️" : "🌙";
     });
 
     customToggle.addEventListener("click", () => {
