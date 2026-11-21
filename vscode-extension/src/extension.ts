@@ -14,28 +14,28 @@ interface AgentPreset {
 const DEFAULT_PRESETS: AgentPreset[] = [
   {
     id: "agy",
-    label: "Antigravity (agy)",
+    label: "AGY",
     badge: "AGY",
     command: "agy",
     args: [],
   },
   {
     id: "claude",
-    label: "Claude Code",
+    label: "Claude",
     badge: "CC",
     command: "claude",
     args: [],
   },
   {
     id: "codex",
-    label: "Codex CLI",
+    label: "Codex",
     badge: "CX",
     command: "codex",
     args: [],
   },
   {
     id: "powershell",
-    label: "PowerShell",
+    label: "Shell",
     badge: "PS",
     command: "powershell.exe",
     args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
@@ -92,8 +92,6 @@ function findExecutableOnWindows(cmd: string): {
     return { shellPath: "cmd.exe", shellArgs: [] };
   }
 
-  // Launch interactive CLI agents inside PowerShell with -ExecutionPolicy Bypass so .ps1/.cmd
-  // wrappers (gemini.ps1, codex.ps1, npm.ps1) run cleanly without PSSecurityException.
   return {
     shellPath: "powershell.exe",
     shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
@@ -108,13 +106,11 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   private _sessions: CockpitSession[] = [];
   private _activeSessionId: string | null = null;
   private _currentCwd: string;
-  private _recentCwds: string[] = [];
   private _defaultLocation: "editor" | "panel" = "editor";
 
   constructor(private readonly _context: vscode.ExtensionContext) {
     const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this._currentCwd = wsFolder || "D:\\Thulir Inc";
-    this._registerRecentCwd(this._currentCwd);
 
     vscode.window.onDidCloseTerminal((closedTerm) => {
       const idx = this._sessions.findIndex((s) => s.terminal === closedTerm);
@@ -142,16 +138,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private _registerRecentCwd(cwd: string) {
-    if (!cwd) return;
-    this._recentCwds = [
-      cwd,
-      ...this._recentCwds.filter(
-        (p) => p.toLowerCase() !== cwd.toLowerCase()
-      ),
-    ].slice(0, 5);
-  }
-
   public resolveWebviewView(
     webviewView: vscode.WebviewView
   ): void | Thenable<void> {
@@ -169,13 +155,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           break;
         case "browseCwd":
           await this._handleBrowseCwd();
-          break;
-        case "setCwd":
-          if (typeof msg.cwd === "string" && msg.cwd.trim()) {
-            this._currentCwd = msg.cwd.trim();
-            this._registerRecentCwd(this._currentCwd);
-            await this.refreshWebviewState();
-          }
           break;
         case "setLocation":
           this._defaultLocation =
@@ -215,7 +194,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         case "sendHandoff":
           this._saveHandoffContent(msg.content || "");
           this.sendTextToActiveAgent(
-            "Please read .agent/handoff.md for current task context and continue from there.",
+            "Read .agent/handoff.md and continue.",
             false
           );
           break;
@@ -232,11 +211,10 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       canSelectFolders: true,
       canSelectMany: false,
       defaultUri: vscode.Uri.file(this._currentCwd),
-      openLabel: "Select Agent Working Directory (cwd)",
+      openLabel: "Select Working Directory",
     });
     if (picked && picked.length > 0) {
       this._currentCwd = picked[0].fsPath;
-      this._registerRecentCwd(this._currentCwd);
       await this.refreshWebviewState();
     }
   }
@@ -254,14 +232,14 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     let targetCwd = params.cwd.trim();
     if (!fs.existsSync(targetCwd) || !fs.statSync(targetCwd).isDirectory()) {
       vscode.window.showErrorMessage(
-        `Agent Cockpit: Directory does not exist: ${targetCwd}`
+        `Directory does not exist: ${targetCwd}`
       );
       return;
     }
 
     let isWorktree = false;
     if (params.useWorktree) {
-      const slug = (params.worktreeName || `task-${Date.now().toString(36)}`)
+      const slug = (params.worktreeName || `wt-${Date.now().toString(36).slice(-4)}`)
         .trim()
         .replace(/[^a-zA-Z0-9-_]/g, "-");
       const parentDir = path.dirname(targetCwd);
@@ -281,14 +259,9 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         ]);
         targetCwd = worktreeDir;
         isWorktree = true;
-        vscode.window.showInformationMessage(
-          `Created isolated Git worktree at ${worktreeDir} (${branchName})`
-        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(
-          `Failed to create Git worktree: ${msg}`
-        );
+        vscode.window.showErrorMessage(`Worktree error: ${msg}`);
         return;
       }
     }
@@ -303,7 +276,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     }
 
     const folderShort = path.basename(targetCwd) || targetCwd;
-    const termName = `[${params.badge}] ${params.title} (${folderShort})`;
+    const termName = `${params.title} · ${folderShort}`;
     const resolved = findExecutableOnWindows(params.command);
 
     const terminalLocation =
@@ -350,14 +323,12 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     this._sessions.push(session);
     this._activeSessionId = id;
     this._currentCwd = targetCwd;
-    this._registerRecentCwd(targetCwd);
     await this.refreshWebviewState();
   }
 
   public focusSessionByIndex(indexZeroBased: number) {
     if (indexZeroBased < 0 || indexZeroBased >= this._sessions.length) return;
-    const target = this._sessions[indexZeroBased];
-    this.focusSessionById(target.id);
+    this.focusSessionById(this._sessions[indexZeroBased].id);
   }
 
   public focusSessionById(id: string) {
@@ -372,8 +343,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   public async closeSessionById(id: string) {
     const idx = this._sessions.findIndex((s) => s.id === id);
     if (idx === -1) return;
-    const target = this._sessions[idx];
-    target.terminal.dispose();
+    this._sessions[idx].terminal.dispose();
     this._sessions.splice(idx, 1);
     if (this._activeSessionId === id) {
       this._activeSessionId =
@@ -396,9 +366,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         activeVsTerm.sendText(text, addNewLine);
         return;
       }
-      vscode.window.showWarningMessage(
-        "Agent Cockpit: No active agent session. Launch a session first!"
-      );
+      vscode.window.showWarningMessage("Launch an agent session first.");
       return;
     }
 
@@ -409,9 +377,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   public sendActiveEditorSelectionToAgent(targetSessionId?: string) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-      vscode.window.showWarningMessage(
-        "Agent Cockpit: Open a file in the editor first to send @file:line context."
-      );
+      vscode.window.showWarningMessage("Open a file in the editor first.");
       return;
     }
 
@@ -473,10 +439,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     try {
       fs.mkdirSync(path.dirname(p), { recursive: true });
       fs.writeFileSync(p, content, "utf8");
-      vscode.window.setStatusBarMessage(
-        "Agent Cockpit: Saved .agent/handoff.md",
-        2500
-      );
+      vscode.window.setStatusBarMessage("Saved .agent/handoff.md", 2000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       vscode.window.showErrorMessage(`Failed saving handoff.md: ${msg}`);
@@ -486,9 +449,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   public async openHandoffInEditor() {
     const p = this._getHandoffPath();
     if (!fs.existsSync(p)) {
-      this._saveHandoffContent(
-        "# Agent Handoff Scratchpad\n\n## Current Goal\n- \n\n## Key Files Modified\n- \n\n## Next Steps for Next Agent\n- \n"
-      );
+      this._saveHandoffContent("# Handoff Notes\n\n");
     }
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(p));
     await vscode.window.showTextDocument(doc);
@@ -525,7 +486,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     this._view.webview.postMessage({
       type: "state",
       currentCwd: this._currentCwd,
-      recentCwds: this._recentCwds,
+      folderName: path.basename(this._currentCwd) || this._currentCwd,
       defaultLocation: this._defaultLocation,
       activeSessionId: this._activeSessionId,
       presets: DEFAULT_PRESETS,
@@ -537,13 +498,10 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         index: idx + 1,
         title: s.title,
         badge: s.badge,
-        command: s.command,
-        args: s.args,
         cwd: s.cwd,
         folderName: path.basename(s.cwd) || s.cwd,
         branch: s.branch,
         isWorktree: s.isWorktree,
-        location: s.location,
       })),
     });
   }
@@ -554,393 +512,413 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agent Cockpit</title>
   <style>
     :root {
-      --bg-card: rgba(255, 255, 255, 0.04);
-      --bg-card-hover: rgba(255, 255, 255, 0.08);
-      --border: var(--vscode-panel-border, rgba(255, 255, 255, 0.12));
+      --surface: rgba(255, 255, 255, 0.035);
+      --surface-hover: rgba(255, 255, 255, 0.075);
+      --border: rgba(255, 255, 255, 0.08);
       --accent: var(--vscode-button-background, #2f81f7);
-      --accent-fg: var(--vscode-button-foreground, #ffffff);
-      --text-muted: var(--vscode-descriptionForeground, #8b949e);
+      --muted: var(--vscode-descriptionForeground, #7d8590);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: var(--vscode-font-family);
       font-size: 12px;
       color: var(--vscode-foreground);
-      background: var(--vscode-sideBar-background);
-      padding: 10px;
+      background: transparent;
+      padding: 8px;
+      height: 100vh;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 8px;
+      user-select: none;
     }
-    .section {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 10px;
-    }
-    .section-header {
+
+    /* Top workspace bar */
+    .top-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      font-size: 10.5px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-muted);
+      gap: 4px;
     }
-    .row {
+    .cwd-pill {
+      flex: 1;
       display: flex;
-      gap: 6px;
       align-items: center;
+      gap: 5px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 4px 8px;
+      cursor: pointer;
+      overflow: hidden;
+      font-size: 11.5px;
+      color: var(--vscode-foreground);
     }
+    .cwd-pill:hover { background: var(--surface-hover); }
+    .cwd-name {
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .branch-tag {
+      font-size: 10px;
+      color: var(--muted);
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .icon-toggle {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 5px;
+      padding: 4px 6px;
+      font-size: 10.5px;
+      cursor: pointer;
+    }
+    .icon-toggle:hover { color: var(--vscode-foreground); background: var(--surface-hover); }
+    .icon-toggle.active {
+      color: #79c0ff;
+      border-color: rgba(56, 139, 253, 0.45);
+      background: rgba(56, 139, 253, 0.14);
+    }
+
+    /* Compact 1-Row Launch Bar */
+    .launch-bar {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr) 26px;
+      gap: 4px;
+    }
+    .launch-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--vscode-foreground);
+      border-radius: 5px;
+      padding: 5px 4px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: center;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    .launch-btn:hover {
+      background: var(--surface-hover);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    /* Optional Custom Popover */
+    .custom-drawer {
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 6px;
+    }
+    .custom-drawer.open { display: flex; }
+
     input[type="text"], textarea {
       width: 100%;
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
-      border: 1px solid var(--vscode-input-border, var(--border));
-      border-radius: 4px;
-      padding: 5px 7px;
-      font-size: 11.5px;
-      font-family: var(--vscode-editor-font-family, monospace);
-    }
-    textarea {
-      min-height: 74px;
-      resize: vertical;
-      font-family: var(--vscode-font-family);
-    }
-    button {
-      background: var(--vscode-button-secondaryBackground, var(--bg-card));
-      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
       border: 1px solid var(--border);
       border-radius: 4px;
-      padding: 5px 8px;
-      font-size: 11.5px;
-      cursor: pointer;
-      display: inline-flex;
+      padding: 4px 6px;
+      font-size: 11px;
+      font-family: inherit;
+    }
+    input[type="text"]:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* Minimal Session List */
+    .sessions-container {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .session-row {
+      display: flex;
       align-items: center;
-      justify-content: center;
-      gap: 5px;
-    }
-    button:hover {
-      background: var(--vscode-button-secondaryHoverBackground, var(--bg-card-hover));
-    }
-    button.primary {
-      background: var(--accent);
-      color: var(--accent-fg);
-      font-weight: 600;
-    }
-    button.primary:hover {
-      background: var(--vscode-button-hoverBackground, #388bfd);
-    }
-    .preset-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 5px;
-    }
-    .preset-btn {
-      justify-content: flex-start;
+      gap: 7px;
       padding: 6px 8px;
-      font-weight: 500;
+      border-radius: 5px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background 0.1s;
     }
-    .badge {
-      font-family: monospace;
-      font-size: 10px;
-      font-weight: 700;
+    .session-row:hover {
+      background: var(--surface);
+    }
+    .session-row.active {
+      background: rgba(47, 129, 247, 0.13);
+      border-color: rgba(47, 129, 247, 0.4);
+    }
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #3fb950;
+      flex-shrink: 0;
+    }
+    .s-title {
+      font-weight: 500;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .s-folder {
+      font-size: 10.5px;
+      color: var(--muted);
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .row-actions {
+      display: none;
+      align-items: center;
+      gap: 2px;
+      margin-left: 4px;
+    }
+    .session-row:hover .row-actions { display: flex; }
+    .session-row:hover .s-folder { display: none; }
+
+    .mini-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
       padding: 1px 4px;
       border-radius: 3px;
-      background: rgba(47, 129, 247, 0.2);
-      color: #79c0ff;
+      font-size: 11px;
     }
-    .toggle-group {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px;
+    .mini-btn:hover {
+      color: var(--vscode-foreground);
+      background: var(--surface-hover);
     }
-    .toggle-btn.active {
-      border-color: var(--accent);
-      background: rgba(47, 129, 247, 0.18);
-      font-weight: 600;
+    .empty-state {
+      margin: auto;
+      color: var(--muted);
+      font-size: 11px;
+      text-align: center;
     }
-    .session-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 7px 8px;
+
+    /* Minimal Footer Tabs (Git & Notes) */
+    .footer-bar {
+      border-top: 1px solid var(--border);
+      padding-top: 6px;
       display: flex;
       flex-direction: column;
-      gap: 5px;
-      cursor: pointer;
-    }
-    .session-card.active {
-      border-color: var(--accent);
-      background: rgba(47, 129, 247, 0.12);
-    }
-    .session-top {
-      display: flex;
-      align-items: center;
       gap: 6px;
     }
-    .session-title {
-      flex: 1;
-      font-weight: 600;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .session-meta {
+    .footer-tabs {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 10.5px;
-      color: var(--text-muted);
       gap: 4px;
     }
-    .git-list {
-      display: flex;
+    .footer-tab {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 10.5px;
+      cursor: pointer;
+      text-align: center;
+    }
+    .footer-tab:hover, .footer-tab.active {
+      color: var(--vscode-foreground);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+    .drawer-pane {
+      display: none;
       flex-direction: column;
       gap: 4px;
-      max-height: 150px;
+      max-height: 140px;
       overflow-y: auto;
     }
-    .git-item {
+    .drawer-pane.open { display: flex; }
+    .git-row {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 4px;
-      padding: 3px 5px;
-      border-radius: 4px;
-      background: var(--bg-card);
-      font-family: monospace;
+      gap: 5px;
       font-size: 11px;
+      padding: 3px 4px;
+      border-radius: 4px;
     }
-    .git-file {
+    .git-row:hover { background: var(--surface); }
+    .git-st { color: #e3b341; font-family: monospace; font-size: 10px; width: 14px; }
+    .git-path {
       flex: 1;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-    .git-status {
-      font-weight: 700;
-      color: #e3b341;
-      width: 18px;
-    }
-    .btn-xs {
-      padding: 2px 5px;
-      font-size: 10px;
-    }
-    .worktree-box {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      background: var(--bg-card);
-      padding: 6px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-    }
-    .checkbox-label {
-      display: flex;
-      align-items: center;
-      gap: 6px;
+      font-family: monospace;
+      font-size: 10.5px;
       cursor: pointer;
-      font-size: 11.5px;
-    }
-    .empty-hint {
-      color: var(--text-muted);
-      font-size: 11px;
-      font-style: italic;
     }
   </style>
 </head>
 <body>
-  <!-- 1. Working Directory & Terminal Placement -->
-  <div class="section">
-    <div class="section-header">
-      <span>1. Working Directory (cwd)</span>
-      <span id="git-branch-pill"></span>
+  <!-- Compact Workspace & Mode Row -->
+  <div class="top-bar">
+    <div id="cwd-pill" class="cwd-pill" title="Click to change folder">
+      <span>📁</span>
+      <span id="cwd-name" class="cwd-name">workspace</span>
+      <span id="branch-tag" class="branch-tag"></span>
     </div>
-    <div class="row">
-      <input id="cwd-input" type="text" placeholder="D:\\Thulir Inc\\..." />
-      <button id="browse-btn" title="Pick folder">Browse…</button>
-    </div>
-    <div class="toggle-group">
-      <button id="loc-editor" class="toggle-btn active" title="Open as Full-Height Editor Tab">
-        📑 Editor Tab
-      </button>
-      <button id="loc-panel" class="toggle-btn" title="Open in VS Code Bottom Terminal Panel">
-        ▤ Bottom Panel
-      </button>
-    </div>
-    <div class="worktree-box">
-      <label class="checkbox-label">
-        <input id="worktree-check" type="checkbox" />
-        <span>Isolate in new Git Worktree</span>
-      </label>
-      <input
-        id="worktree-name"
-        type="text"
-        placeholder="Worktree task slug (e.g. feat-auth)"
-        style="display: none;"
-      />
-    </div>
+    <button id="loc-toggle" class="icon-toggle active" title="Toggle Editor Tab vs Bottom Panel">
+      Tab
+    </button>
+    <button id="wt-toggle" class="icon-toggle" title="Isolate next session in a new Git Worktree">
+      WT
+    </button>
   </div>
 
-  <!-- 2. Quick-Spawn CLI Agents -->
-  <div class="section">
-    <div class="section-header">
-      <span>2. Quick-Spawn CLI Agent</span>
-    </div>
-    <div id="preset-grid" class="preset-grid"></div>
-    <details>
-      <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);margin-top:2px;">
-        + Custom Command / Arguments…
-      </summary>
-      <div style="display:flex;flex-direction:column;gap:5px;margin-top:6px;">
-        <input id="custom-title" type="text" placeholder="Session Title (e.g. Aider / Custom)" />
-        <input id="custom-cmd" type="text" placeholder="Executable (e.g. claude, gemini, python)" />
-        <input id="custom-args" type="text" placeholder="Optional arguments" />
-        <button id="custom-launch-btn" class="primary">Launch Custom Session</button>
+  <!-- 1-Row Quick Launch Bar -->
+  <div class="launch-bar">
+    <div id="preset-buttons" style="display:contents;"></div>
+    <button id="custom-toggle" class="launch-btn" title="Custom command">+</button>
+  </div>
+
+  <div id="custom-drawer" class="custom-drawer">
+    <input id="custom-cmd" type="text" placeholder="Command (e.g. agy, claude, aider)" />
+    <div class="custom-drawer open" style="display:none;" id="wt-input-wrap"></div>
+  </div>
+
+  <!-- Clean Session List -->
+  <div id="session-list" class="sessions-container"></div>
+
+  <!-- Collapsible Footer (Git & Handoff) -->
+  <div class="footer-bar">
+    <div id="git-drawer" class="drawer-pane"></div>
+    <div id="notes-drawer" class="drawer-pane">
+      <textarea id="handoff-text" rows="3" placeholder="Shared handoff notes (.agent/handoff.md)…"></textarea>
+      <div style="display:flex;gap:4px;">
+        <button id="save-notes" class="footer-tab">Save</button>
+        <button id="send-notes" class="footer-tab">Send to Agent</button>
       </div>
-    </details>
-  </div>
-
-  <!-- 3. Active Sessions Switcher -->
-  <div class="section">
-    <div class="section-header">
-      <span>3. Active Sessions (<span id="session-count">0</span>)</span>
-      <button id="send-sel-btn" class="btn-xs" title="Send active editor @file:line selection (Ctrl+Alt+S)">
-        Send @file:line
-      </button>
     </div>
-    <div id="session-list" style="display:flex;flex-direction:column;gap:5px;"></div>
-  </div>
-
-  <!-- 4. Live Git Status & Diff Drawer -->
-  <div class="section">
-    <div class="section-header">
-      <span>4. Live Git Changes</span>
-      <button id="refresh-git-btn" class="btn-xs">↻ Refresh</button>
+    <div class="footer-tabs">
+      <button id="tab-git" class="footer-tab">Git (<span id="git-count">0</span>)</button>
+      <button id="tab-notes" class="footer-tab">Notes</button>
+      <button id="tab-send" class="footer-tab" title="Send editor @file:line selection (Ctrl+Alt+S)">@Line</button>
     </div>
-    <div id="git-list" class="git-list"></div>
-  </div>
-
-  <!-- 5. Handoff Scratchpad (.agent/handoff.md) -->
-  <div class="section" style="border-bottom:none;">
-    <div class="section-header">
-      <span>5. Handoff (.agent/handoff.md)</span>
-      <button id="save-handoff-btn" class="btn-xs">Save</button>
-    </div>
-    <textarea
-      id="handoff-textarea"
-      placeholder="Summarize progress or context to hand off between Claude, Codex, and Gemini..."
-    ></textarea>
-    <button id="send-handoff-btn">Send Handoff Prompt to Active Agent</button>
   </div>
 
   <script>
     const vscode = acquireVsCodeApi();
 
-    const cwdInput = document.getElementById("cwd-input");
-    const browseBtn = document.getElementById("browse-btn");
-    const locEditorBtn = document.getElementById("loc-editor");
-    const locPanelBtn = document.getElementById("loc-panel");
-    const worktreeCheck = document.getElementById("worktree-check");
-    const worktreeNameInput = document.getElementById("worktree-name");
-    const presetGrid = document.getElementById("preset-grid");
-    const sessionList = document.getElementById("session-list");
-    const sessionCount = document.getElementById("session-count");
-    const gitList = document.getElementById("git-list");
-    const gitBranchPill = document.getElementById("git-branch-pill");
-    const handoffTextarea = document.getElementById("handoff-textarea");
-
-    let currentState = {
+    let state = {
       currentCwd: "",
       defaultLocation: "editor",
-      presets: [],
-      sessions: [],
+      useWorktree: false,
+      activeFooter: null,
     };
 
-    worktreeCheck.addEventListener("change", () => {
-      worktreeNameInput.style.display = worktreeCheck.checked ? "block" : "none";
-    });
+    const cwdPill = document.getElementById("cwd-pill");
+    const cwdName = document.getElementById("cwd-name");
+    const branchTag = document.getElementById("branch-tag");
+    const locToggle = document.getElementById("loc-toggle");
+    const wtToggle = document.getElementById("wt-toggle");
+    const presetButtons = document.getElementById("preset-buttons");
+    const customToggle = document.getElementById("custom-toggle");
+    const customDrawer = document.getElementById("custom-drawer");
+    const customCmd = document.getElementById("custom-cmd");
+    const sessionList = document.getElementById("session-list");
+    const gitDrawer = document.getElementById("git-drawer");
+    const notesDrawer = document.getElementById("notes-drawer");
+    const gitCount = document.getElementById("git-count");
+    const handoffText = document.getElementById("handoff-text");
 
-    cwdInput.addEventListener("change", () => {
-      vscode.postMessage({ type: "setCwd", cwd: cwdInput.value });
-    });
-
-    browseBtn.addEventListener("click", () => {
+    cwdPill.addEventListener("click", () => {
       vscode.postMessage({ type: "browseCwd" });
     });
 
-    locEditorBtn.addEventListener("click", () => {
-      vscode.postMessage({ type: "setLocation", location: "editor" });
+    locToggle.addEventListener("click", () => {
+      const next = state.defaultLocation === "editor" ? "panel" : "editor";
+      vscode.postMessage({ type: "setLocation", location: next });
     });
 
-    locPanelBtn.addEventListener("click", () => {
-      vscode.postMessage({ type: "setLocation", location: "panel" });
+    wtToggle.addEventListener("click", () => {
+      state.useWorktree = !state.useWorktree;
+      wtToggle.classList.toggle("active", state.useWorktree);
     });
 
-    document.getElementById("custom-launch-btn").addEventListener("click", () => {
-      const cmd = document.getElementById("custom-cmd").value.trim();
-      if (!cmd) return;
-      const title = document.getElementById("custom-title").value.trim() || cmd;
-      const rawArgs = document.getElementById("custom-args").value.trim();
-      const args = rawArgs ? rawArgs.split(/\\s+/) : [];
-      vscode.postMessage({
-        type: "spawnSession",
-        title,
-        badge: "CLI",
-        command: cmd,
-        args,
-        cwd: cwdInput.value.trim(),
-        location: currentState.defaultLocation,
-        useWorktree: worktreeCheck.checked,
-        worktreeName: worktreeNameInput.value.trim(),
-      });
+    customToggle.addEventListener("click", () => {
+      customDrawer.classList.toggle("open");
+      if (customDrawer.classList.contains("open")) customCmd.focus();
     });
 
-    document.getElementById("send-sel-btn").addEventListener("click", () => {
+    customCmd.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && customCmd.value.trim()) {
+        const parts = customCmd.value.trim().split(/\\s+/);
+        vscode.postMessage({
+          type: "spawnSession",
+          title: parts[0],
+          badge: "CLI",
+          command: parts[0],
+          args: parts.slice(1),
+          cwd: state.currentCwd,
+          location: state.defaultLocation,
+          useWorktree: state.useWorktree,
+        });
+        customCmd.value = "";
+        customDrawer.classList.remove("open");
+      }
+    });
+
+    document.getElementById("tab-git").addEventListener("click", () => {
+      state.activeFooter = state.activeFooter === "git" ? null : "git";
+      gitDrawer.classList.toggle("open", state.activeFooter === "git");
+      notesDrawer.classList.remove("open");
+      if (state.activeFooter === "git") vscode.postMessage({ type: "refreshGit" });
+    });
+
+    document.getElementById("tab-notes").addEventListener("click", () => {
+      state.activeFooter = state.activeFooter === "notes" ? null : "notes";
+      notesDrawer.classList.toggle("open", state.activeFooter === "notes");
+      gitDrawer.classList.remove("open");
+    });
+
+    document.getElementById("tab-send").addEventListener("click", () => {
       vscode.postMessage({ type: "sendSelection" });
     });
 
-    document.getElementById("refresh-git-btn").addEventListener("click", () => {
-      vscode.postMessage({ type: "refreshGit" });
+    document.getElementById("save-notes").addEventListener("click", () => {
+      vscode.postMessage({ type: "saveHandoff", content: handoffText.value });
     });
 
-    document.getElementById("save-handoff-btn").addEventListener("click", () => {
-      vscode.postMessage({
-        type: "saveHandoff",
-        content: handoffTextarea.value,
-      });
-    });
-
-    document.getElementById("send-handoff-btn").addEventListener("click", () => {
-      vscode.postMessage({
-        type: "sendHandoff",
-        content: handoffTextarea.value,
-      });
+    document.getElementById("send-notes").addEventListener("click", () => {
+      vscode.postMessage({ type: "sendHandoff", content: handoffText.value });
     });
 
     window.addEventListener("message", (event) => {
       const msg = event.data;
       if (msg.type !== "state") return;
-      currentState = msg;
 
-      cwdInput.value = msg.currentCwd || "";
-      gitBranchPill.textContent = msg.gitBranch ? "🌿 " + msg.gitBranch : "";
+      state.currentCwd = msg.currentCwd;
+      state.defaultLocation = msg.defaultLocation;
 
-      locEditorBtn.classList.toggle("active", msg.defaultLocation === "editor");
-      locPanelBtn.classList.toggle("active", msg.defaultLocation === "panel");
+      cwdName.textContent = msg.folderName || "workspace";
+      cwdPill.title = msg.currentCwd;
+      branchTag.textContent = msg.gitBranch ? msg.gitBranch : "";
 
-      // Render Presets
-      presetGrid.innerHTML = "";
+      locToggle.textContent = msg.defaultLocation === "editor" ? "Tab" : "Panel";
+      locToggle.classList.toggle("active", msg.defaultLocation === "editor");
+
+      // Presets
+      presetButtons.innerHTML = "";
       (msg.presets || []).forEach((p) => {
         const btn = document.createElement("button");
-        btn.className = "preset-btn";
-        btn.innerHTML = '<span class="badge">' + p.badge + "</span><span>" + p.label + "</span>";
+        btn.className = "launch-btn";
+        btn.textContent = p.label;
+        btn.title = "Launch " + p.label + " (" + p.command + ")";
         btn.addEventListener("click", () => {
           vscode.postMessage({
             type: "spawnSession",
@@ -948,77 +926,72 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             badge: p.badge,
             command: p.command,
             args: p.args,
-            cwd: cwdInput.value.trim(),
-            location: currentState.defaultLocation,
-            useWorktree: worktreeCheck.checked,
-            worktreeName: worktreeNameInput.value.trim(),
+            cwd: state.currentCwd,
+            location: state.defaultLocation,
+            useWorktree: state.useWorktree,
           });
         });
-        presetGrid.appendChild(btn);
+        presetButtons.appendChild(btn);
       });
 
-      // Render Active Sessions
-      sessionCount.textContent = String((msg.sessions || []).length);
+      // Sessions
       sessionList.innerHTML = "";
       if (!msg.sessions || msg.sessions.length === 0) {
-        sessionList.innerHTML = '<div class="empty-hint">No running sessions. Click a preset above to launch.</div>';
+        sessionList.innerHTML = '<div class="empty-state">Click an agent above to start</div>';
       } else {
         msg.sessions.forEach((s) => {
-          const card = document.createElement("div");
-          card.className = "session-card" + (s.id === msg.activeSessionId ? " active" : "");
-          card.innerHTML =
-            '<div class="session-top">' +
-              '<span class="badge">' + s.badge + "</span>" +
-              '<span class="session-title">' + s.title + "</span>" +
-              '<span style="font-family:monospace;font-size:10px;color:var(--text-muted);">^Alt+' + s.index + "</span>" +
-              '<button class="btn-xs send-btn" title="Send @file:line to this agent">@</button>' +
-              '<button class="btn-xs close-btn" title="Kill session">✕</button>' +
-            "</div>" +
-            '<div class="session-meta">' +
-              '<span title="' + s.cwd + '">📁 ' + s.folderName + (s.branch ? " (" + s.branch + ")" : "") + "</span>" +
-              '<span>' + (s.location === "editor" ? "Editor Tab" : "Panel") + "</span>" +
-            "</div>";
+          const row = document.createElement("div");
+          row.className = "session-row" + (s.id === msg.activeSessionId ? " active" : "");
+          row.innerHTML =
+            '<span class="dot"></span>' +
+            '<span class="s-title">' + s.title + '</span>' +
+            '<span class="s-folder">' + s.folderName + '</span>' +
+            '<div class="row-actions">' +
+              '<button class="mini-btn act-send" title="Send @file:line">@</button>' +
+              '<button class="mini-btn act-close" title="Close">✕</button>' +
+            '</div>';
 
-          card.addEventListener("click", () => {
+          row.addEventListener("click", () => {
             vscode.postMessage({ type: "focusSession", id: s.id });
           });
-          card.querySelector(".send-btn").addEventListener("click", (e) => {
+          row.querySelector(".act-send").addEventListener("click", (e) => {
             e.stopPropagation();
             vscode.postMessage({ type: "sendSelection", id: s.id });
           });
-          card.querySelector(".close-btn").addEventListener("click", (e) => {
+          row.querySelector(".act-close").addEventListener("click", (e) => {
             e.stopPropagation();
             vscode.postMessage({ type: "closeSession", id: s.id });
           });
-          sessionList.appendChild(card);
+          sessionList.appendChild(row);
         });
       }
 
-      // Render Git Status
-      gitList.innerHTML = "";
-      if (!msg.gitChanges || msg.gitChanges.length === 0) {
-        gitList.innerHTML = '<div class="empty-hint">Working tree clean (or not a Git repo).</div>';
+      // Git
+      const changes = msg.gitChanges || [];
+      gitCount.textContent = String(changes.length);
+      gitDrawer.innerHTML = "";
+      if (changes.length === 0) {
+        gitDrawer.innerHTML = '<div class="empty-state" style="padding:6px 0;">Clean working tree</div>';
       } else {
-        msg.gitChanges.forEach((c) => {
-          const row = document.createElement("div");
-          row.className = "git-item";
-          row.innerHTML =
-            '<span class="git-status">' + c.status + "</span>" +
-            '<span class="git-file" title="' + c.file + '">' + c.file + "</span>" +
-            '<button class="btn-xs diff-btn" title="Open Git Diff">Diff</button>' +
-            '<button class="btn-xs mention-btn" title="Insert @file into active agent">@File</button>';
-          row.querySelector(".diff-btn").addEventListener("click", () => {
+        changes.forEach((c) => {
+          const r = document.createElement("div");
+          r.className = "git-row";
+          r.innerHTML =
+            '<span class="git-st">' + c.status + '</span>' +
+            '<span class="git-path" title="Click to view diff">' + c.file + '</span>' +
+            '<button class="mini-btn">@</button>';
+          r.querySelector(".git-path").addEventListener("click", () => {
             vscode.postMessage({ type: "openFileDiff", file: c.file });
           });
-          row.querySelector(".mention-btn").addEventListener("click", () => {
+          r.querySelector(".mini-btn").addEventListener("click", () => {
             vscode.postMessage({ type: "mentionFile", file: c.file });
           });
-          gitList.appendChild(row);
+          gitDrawer.appendChild(r);
         });
       }
 
-      if (document.activeElement !== handoffTextarea) {
-        handoffTextarea.value = msg.handoffContent || "";
+      if (document.activeElement !== handoffText) {
+        handoffText.value = msg.handoffContent || "";
       }
     });
 
@@ -1045,24 +1018,24 @@ export function activate(context: vscode.ExtensionContext) {
       const picked = await vscode.window.showQuickPick(
         [
           ...DEFAULT_PRESETS.map((p) => ({
-            label: `[${p.badge}] ${p.label}`,
+            label: p.label,
             description: p.command,
             preset: p,
           })),
           {
-            label: "[CLI] Custom CLI Command…",
-            description: "Enter any executable and arguments",
+            label: "Custom CLI Command…",
+            description: "Enter executable",
             preset: null,
           },
         ],
-        { placeHolder: "Select CLI Agent to launch in Agent Cockpit" }
+        { placeHolder: "Launch Agent" }
       );
       if (!picked) return;
 
       const wsFolder =
         vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || "D:\\Thulir Inc";
       const cwd = await vscode.window.showInputBox({
-        prompt: "Working Directory (cwd) for this session",
+        prompt: "Working Directory (cwd)",
         value: wsFolder,
       });
       if (!cwd) return;
@@ -1078,7 +1051,7 @@ export function activate(context: vscode.ExtensionContext) {
         });
       } else {
         const customCmd = await vscode.window.showInputBox({
-          prompt: "Enter CLI executable (e.g. claude, codex, gemini, aider)",
+          prompt: "CLI executable",
         });
         if (!customCmd) return;
         await provider.spawnSession({

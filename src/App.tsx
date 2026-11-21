@@ -59,7 +59,6 @@ export const App: React.FC = () => {
     [registerCwd]
   );
 
-  // Boot initial PowerShell session in default working directory on startup
   useEffect(() => {
     let mounted = true;
     invoke<string>("get_default_cwd")
@@ -67,14 +66,16 @@ export const App: React.FC = () => {
         if (!mounted) return;
         setDefaultCwd(cwd);
         registerCwd(cwd);
-        const initialPreset = DEFAULT_PRESETS[0];
+        const shellPreset =
+          DEFAULT_PRESETS.find((p) => p.id === "powershell") ??
+          DEFAULT_PRESETS[0];
         const initialId = createId();
         setSessions([
           {
             id: initialId,
-            title: initialPreset.label,
-            command: initialPreset.command,
-            args: initialPreset.args,
+            title: shellPreset.label,
+            command: shellPreset.command,
+            args: shellPreset.args,
             cwd,
             status: "idle",
             createdAt: Date.now(),
@@ -86,14 +87,16 @@ export const App: React.FC = () => {
         if (!mounted) return;
         const fallbackCwd = "D:\\Thulir Inc";
         setDefaultCwd(fallbackCwd);
-        const initialPreset = DEFAULT_PRESETS[0];
+        const shellPreset =
+          DEFAULT_PRESETS.find((p) => p.id === "powershell") ??
+          DEFAULT_PRESETS[0];
         const initialId = createId();
         setSessions([
           {
             id: initialId,
-            title: initialPreset.label,
-            command: initialPreset.command,
-            args: initialPreset.args,
+            title: shellPreset.label,
+            command: shellPreset.command,
+            args: shellPreset.args,
             cwd: fallbackCwd,
             status: "idle",
             createdAt: Date.now(),
@@ -144,7 +147,6 @@ export const App: React.FC = () => {
     setIsModalOpen(true);
   }, []);
 
-  // Keyboard shortcuts: Ctrl/Cmd + 1..9 to switch sessions, Ctrl/Cmd + N for new session modal
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const isMod = e.ctrlKey || e.metaKey;
@@ -171,79 +173,57 @@ export const App: React.FC = () => {
   return (
     <div className="cockpit-shell">
       <aside className="left-rail">
-        <div className="rail-brand">
-          <div className="brand-title">
-            <span className="brand-dot" />
-            <span>Agent Cockpit</span>
-          </div>
+        <div className="rail-header">
+          <span className="brand-label">Cockpit</span>
           <button
             type="button"
-            className="btn-primary btn-new-session"
+            className="btn-plus"
             onClick={() => openModalWithPreset()}
-            title="Launch Session with Working Directory & Custom Command (Ctrl+Shift+N)"
+            title="New Session (Ctrl+Shift+N)"
           >
-            + New Session…
+            +
           </button>
         </div>
 
-        <div className="rail-section-label">Quick Spawn (Pick CWD)</div>
-        <div className="quick-preset-row">
+        <div className="quick-bar">
           {DEFAULT_PRESETS.slice(0, 4).map((preset) => (
             <button
               key={preset.id}
               type="button"
-              className="quick-preset-btn"
+              className="quick-chip"
               onClick={() => openModalWithPreset(preset)}
-              title={`Configure & launch ${preset.label}`}
+              title={preset.label}
             >
-              <span className="quick-badge">{preset.badge}</span>
-              <span className="quick-name">{preset.label.split(" ")[0]}</span>
+              {preset.badge}
             </button>
           ))}
         </div>
 
-        <div className="rail-section-label">
-          Active Sessions ({sessions.length})
-        </div>
         <div className="session-list">
-          {sessions.map((s, index) => {
+          {sessions.map((s) => {
             const isSelected = s.id === activeSessionId;
             const folderName =
               s.cwd.split(/[\\/]/).filter(Boolean).pop() || s.cwd;
             return (
               <div
                 key={s.id}
-                className={`session-item ${isSelected ? "selected" : ""}`}
+                className={`session-row ${isSelected ? "selected" : ""}`}
                 onClick={() => setActiveSessionId(s.id)}
                 role="button"
                 tabIndex={0}
+                title={`${s.title} — ${s.cwd}`}
               >
-                <div className="session-item-top">
-                  <span
-                    className={`status-indicator status-${s.status}`}
-                    title={`Status: ${s.status}`}
-                  />
-                  <span className="session-title">{s.title}</span>
-                  {index < 9 && (
-                    <span className="shortcut-hint">^{index + 1}</span>
-                  )}
-                  <button
-                    type="button"
-                    className="session-close-btn"
-                    onClick={(e) => handleCloseSession(s.id, e)}
-                    title="Kill PTY & Close Session"
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div className="session-item-bottom">
-                  <span className="session-folder" title={s.cwd}>
-                    📁 {folderName}
-                  </span>
-                  <span className={`session-status-badge badge-${s.status}`}>
-                    {s.status}
-                  </span>
-                </div>
+                <span className={`status-indicator status-${s.status}`} />
+                <span className="session-title">{s.title}</span>
+                <span className="session-folder">{folderName}</span>
+                <button
+                  type="button"
+                  className="session-close-btn"
+                  onClick={(e) => handleCloseSession(s.id, e)}
+                  title="Close"
+                >
+                  ✕
+                </button>
               </div>
             );
           })}
@@ -253,17 +233,12 @@ export const App: React.FC = () => {
       <main className="main-stage">
         {sessions.length === 0 ? (
           <div className="empty-stage">
-            <h2>No Active Terminal Sessions</h2>
-            <p>
-              Launch a PowerShell, Claude Code, Codex, Gemini, or custom CLI
-              session pointed at any project folder.
-            </p>
             <button
               type="button"
               className="btn-primary"
               onClick={() => openModalWithPreset()}
             >
-              + Launch Session with Working Directory
+              + New Session
             </button>
           </div>
         ) : (
