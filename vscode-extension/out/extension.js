@@ -159,6 +159,54 @@ function formatAtFileRef(relPath, lineRange) {
 function claudeProjectSlug(cwd) {
     return cwd.replace(/[^a-zA-Z0-9]/g, "-");
 }
+const SHELL_LANGS = new Set([
+    "sh",
+    "bash",
+    "zsh",
+    "powershell",
+    "ps1",
+    "pwsh",
+    "cmd",
+    "bat",
+    "shell",
+    "console",
+    "terminal",
+]);
+function extractSnippetsFromMarkdown(markdownText, sessionTitle) {
+    const results = [];
+    if (!markdownText || !markdownText.trim())
+        return results;
+    // 1. Add the full response text item so user can 1-click copy the whole AI response
+    results.push({
+        id: `resp-${results.length}`,
+        sessionTitle,
+        kind: "response",
+        language: "markdown",
+        content: markdownText.trim(),
+    });
+    // 2. Extract fenced code blocks (```lang ... ```)
+    const fenceRegex = /```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/g;
+    let match;
+    while ((match = fenceRegex.exec(markdownText)) !== null) {
+        const lang = (match[1] || "").trim().toLowerCase();
+        const code = (match[2] || "").trim();
+        if (!code)
+            continue;
+        const lineCount = code.split(/\r?\n/).length;
+        const looksLikeCommand = SHELL_LANGS.has(lang) ||
+            (!lang &&
+                lineCount <= 4 &&
+                /^(npm|npx|pnpm|yarn|git|cargo|rustc|rustup|winget|python|pip|uv|pytest|code|agy|claude|codex|gemini|cd|dir|ls|mkdir|docker|kubectl|gcloud|bq)\b/m.test(code));
+        results.push({
+            id: `snip-${results.length}`,
+            sessionTitle,
+            kind: looksLikeCommand ? "command" : "code",
+            language: lang || (looksLikeCommand ? "shell" : "code"),
+            content: code,
+        });
+    }
+    return results.slice(0, 12);
+}
 /**
  * Discover all MCP servers & their live status across:
  * 1. ~/.gemini/antigravity/mcp/<serverName> & ~/.gemini/antigravity-cli/mcp/<serverName>
@@ -451,6 +499,7 @@ function discoverAgySessions(defaultCwd) {
         let runtimeHint = "idle";
         let lastUserTurnId;
         let isTurnComplete = false;
+        const recentAssistantTexts = [];
         const pbtxtPath = path.join(annotationsDir, `${convId}.pbtxt`);
         if (fs.existsSync(pbtxtPath)) {
             try {
@@ -487,6 +536,11 @@ function discoverAgySessions(defaultCwd) {
                         if (obj.source === "USER_EXPLICIT" || obj.type === "USER_INPUT") {
                             lastUserTurnId = `${convId}:u:${obj.step_index ?? i}`;
                         }
+                        else if (obj.source === "MODEL" &&
+                            typeof obj.content === "string" &&
+                            obj.content.trim()) {
+                            recentAssistantTexts.push(obj.content.trim());
+                        }
                     }
                     catch {
                         // ignore
@@ -519,6 +573,7 @@ function discoverAgySessions(defaultCwd) {
             }
         }
         if (title) {
+            const combinedMd = recentAssistantTexts.slice(-2).join("\n\n");
             results.push({
                 cliSessionId: convId,
                 title,
@@ -527,6 +582,8 @@ function discoverAgySessions(defaultCwd) {
                 runtimeHint,
                 lastUserTurnId,
                 isTurnComplete,
+                lastAssistantText: recentAssistantTexts[recentAssistantTexts.length - 1],
+                snippets: extractSnippetsFromMarkdown(combinedMd, title),
                 agentType: "agy",
             });
         }
@@ -542,6 +599,7 @@ function parseClaudeJsonlMeta(filePath) {
     let isTurnComplete = false;
     let lastText = "";
     let hasPendingToolUse = false;
+    const recentAssistantTexts = [];
     try {
         const stat = fs.statSync(filePath);
         const quietMs = Date.now() - stat.mtimeMs;
@@ -599,6 +657,9 @@ function parseClaudeJsonlMeta(filePath) {
                         const textPart = rawContent.find((p) => p && p.type === "text" && typeof p.text === "string");
                         hasPendingToolUse = Boolean(toolUse);
                         lastText = textPart?.text || "";
+                        if (lastText.trim()) {
+                            recentAssistantTexts.push(lastText.trim());
+                        }
                         if (!toolUse && obj.message.stop_reason === "end_turn") {
                             isTurnComplete = true;
                         }
@@ -627,6 +688,7 @@ function parseClaudeJsonlMeta(filePath) {
         const cleaned = chosen
             ? chosen.replace(/\s+/g, " ").trim().slice(0, 32)
             : null;
+        const combinedMd = recentAssistantTexts.slice(-2).join("\n\n");
         return {
             sessionId,
             title: cleaned,
@@ -634,6 +696,7 @@ function parseClaudeJsonlMeta(filePath) {
             runtimeHint,
             lastUserTurnId,
             isTurnComplete: isTurnComplete && quietMs >= 2500,
+            snippets: extractSnippetsFromMarkdown(combinedMd, cleaned || "Claude"),
         };
     }
     catch {
@@ -643,6 +706,7 @@ function parseClaudeJsonlMeta(filePath) {
             cwd: null,
             runtimeHint: "idle",
             isTurnComplete: false,
+            snippets: [],
         };
     }
 }
@@ -685,6 +749,7 @@ function discoverClaudeSessionsForCwd(cwd) {
                         runtimeHint: meta.runtimeHint,
                         lastUserTurnId: meta.lastUserTurnId,
                         isTurnComplete: meta.isTurnComplete,
+                        snippets: meta.snippets,
                         agentType: "claude",
                     });
                 }
@@ -827,6 +892,8 @@ class AgentCockpitProvider {
     static viewType = "agentCockpit.sidebarView";
     _view;
     _sessions = [];
+    _snippetsBySessionId = new Map();
+    _latestSnippets = [];
     _dismissedCliIds;
     _activeSessionId = null;
     _currentCwd;
@@ -959,6 +1026,14 @@ class AgentCockpitProvider {
         let changed = false;
         const applyDiscovered = (match, disc) => {
             match.cliSessionName = disc.title;
+            if (disc.snippets && disc.snippets.length > 0) {
+                const prevCount = (this._snippetsBySessionId.get(match.id) || []).length;
+                this._snippetsBySessionId.set(match.id, disc.snippets);
+                this._latestSnippets = disc.snippets;
+                if (disc.snippets.length !== prevCount) {
+                    changed = true;
+                }
+            }
             if (isTerminalAlive(match.terminal)) {
                 // Initialize turn tracking without chiming on existing historical turns
                 if (!match.lastUserTurnId && disc.lastUserTurnId) {
@@ -1054,6 +1129,13 @@ class AgentCockpitProvider {
                 }
             }
         }
+        if (this._latestSnippets.length === 0) {
+            const firstWithSnips = [...agyDiscovered, ...discoverClaudeSessionsForCwd(this._currentCwd)].find((d) => d.snippets && d.snippets.length > 0);
+            if (firstWithSnips) {
+                this._latestSnippets = firstWithSnips.snippets;
+                changed = true;
+            }
+        }
         if (changed) {
             this._persistSessions();
         }
@@ -1073,6 +1155,14 @@ class AgentCockpitProvider {
         }
     }
     _persistSessions() {
+        // Keep pinned sessions sorted at the top
+        this._sessions.sort((a, b) => {
+            const pinA = a.pinned ? 1 : 0;
+            const pinB = b.pinned ? 1 : 0;
+            if (pinA !== pinB)
+                return pinB - pinA;
+            return a.createdAt - b.createdAt;
+        });
         const serializable = this._sessions.map((s) => ({
             id: s.id,
             cliSessionId: s.cliSessionId,
@@ -1080,6 +1170,7 @@ class AgentCockpitProvider {
             title: s.title,
             badge: s.badge,
             color: s.color,
+            pinned: Boolean(s.pinned),
             command: s.command,
             args: s.args,
             cwd: s.cwd,
@@ -1156,6 +1247,42 @@ class AgentCockpitProvider {
                 case "renameSession":
                     if (typeof msg.id === "string" && typeof msg.title === "string") {
                         await this.renameSession(msg.id, msg.title, true);
+                    }
+                    break;
+                case "togglePinSession":
+                    if (typeof msg.id === "string") {
+                        const target = this._sessions.find((s) => s.id === msg.id);
+                        if (target) {
+                            target.pinned = !target.pinned;
+                            this._persistSessions();
+                            await this.refreshWebviewState();
+                        }
+                    }
+                    break;
+                case "setSessionColor":
+                    if (typeof msg.id === "string" && typeof msg.color === "string") {
+                        const target = this._sessions.find((s) => s.id === msg.id);
+                        if (target) {
+                            target.color = msg.color;
+                            this._persistSessions();
+                            await this.refreshWebviewState();
+                        }
+                    }
+                    break;
+                case "copyToClipboard":
+                    if (typeof msg.text === "string") {
+                        await vscode.env.clipboard.writeText(msg.text);
+                        vscode.window.setStatusBarMessage("Agent Cockpit: Copied to clipboard!", 2500);
+                    }
+                    break;
+                case "runCommandInShell":
+                    if (typeof msg.command === "string" && msg.command.trim()) {
+                        await this._runCommandInShellSession(msg.command.trim());
+                    }
+                    break;
+                case "sendCommandToTerminal":
+                    if (typeof msg.command === "string" && msg.command.trim()) {
+                        await this.sendTextToActiveAgent(msg.command.trim(), Boolean(msg.execute));
                     }
                     break;
                 case "sendQuickPrompt":
@@ -1495,6 +1622,39 @@ class AgentCockpitProvider {
             // ignore
         }
     }
+    /**
+     * Executes a shell command recommended by an AI inside a dedicated PowerShell terminal
+     * in the current working directory (reusing an open Shell session or creating one).
+     */
+    async _runCommandInShellSession(commandText) {
+        let shellSess = this._sessions.find((s) => s.command.toLowerCase().includes("powershell") &&
+            s.cwd.toLowerCase() === this._currentCwd.toLowerCase());
+        if (!shellSess) {
+            await this.spawnSession({
+                title: "Shell",
+                badge: ">_",
+                color: "#64748b",
+                command: "powershell.exe",
+                args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+                cwd: this._currentCwd,
+                location: this._defaultLocation,
+            });
+            shellSess = this._sessions[this._sessions.length - 1];
+        }
+        else if (!isTerminalAlive(shellSess.terminal)) {
+            await this.relaunchSessionById(shellSess.id, false);
+        }
+        if (shellSess && shellSess.terminal) {
+            shellSess.terminal.show(false);
+            shellSess.terminal.sendText(commandText, true);
+            try {
+                await vscode.commands.executeCommand("workbench.action.terminal.focus");
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
     async sendActiveEditorSelectionToAgent(targetSessionId) {
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
@@ -1636,6 +1796,10 @@ class AgentCockpitProvider {
         const validLastCliId = installedPresets.some((p) => p.id === this._lastUsedCliId)
             ? this._lastUsedCliId
             : installedPresets[0]?.id || "agy";
+        const activeSnippets = (this._activeSessionId &&
+            this._snippetsBySessionId.get(this._activeSessionId)) ||
+            this._latestSnippets ||
+            [];
         this._view.webview.postMessage({
             type: "state",
             currentCwd: this._currentCwd,
@@ -1650,6 +1814,7 @@ class AgentCockpitProvider {
             gitChanges: gitInfo.changes,
             mcpServers,
             skillsAndAgents,
+            aiSnippets: activeSnippets,
             handoffContent,
             sessions: this._sessions.map((s, idx) => ({
                 id: s.id,
@@ -1658,6 +1823,7 @@ class AgentCockpitProvider {
                 title: s.title,
                 badge: s.badge,
                 color: s.color,
+                pinned: Boolean(s.pinned),
                 cwd: s.cwd,
                 folderName: path.basename(s.cwd) || s.cwd,
                 branch: s.branch,
@@ -1898,9 +2064,10 @@ class AgentCockpitProvider {
       padding: 2px 1px;
     }
     .session-card {
+      position: relative;
       display: flex;
-      align-items: center;
-      gap: 7px;
+      flex-direction: column;
+      gap: 6px;
       padding: 8px 9px;
       background: var(--md-surface);
       border: 1px solid var(--md-border);
@@ -1908,6 +2075,12 @@ class AgentCockpitProvider {
       box-shadow: var(--md-shadow-sm);
       cursor: pointer;
       transition: all 0.14s ease;
+    }
+    .session-card-main {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      width: 100%;
     }
     .session-card:hover {
       border-color: var(--md-border-strong);
@@ -1917,8 +2090,87 @@ class AgentCockpitProvider {
     }
     .session-card.active {
       border-color: var(--md-primary);
-      border-left: 4px solid var(--md-primary);
       background: var(--md-primary-bg);
+    }
+    .pin-marker {
+      font-size: 10px;
+      color: #f59e0b;
+      flex-shrink: 0;
+    }
+    .color-palette-row {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding-top: 4px;
+      border-top: 1px dashed var(--md-border);
+    }
+    .color-palette-row.open {
+      display: flex;
+    }
+    .color-swatch {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.7);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+      cursor: pointer;
+      transition: transform 0.12s;
+    }
+    .color-swatch:hover {
+      transform: scale(1.22);
+    }
+    .snippet-card {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      padding: 6px 7px;
+      border-radius: 6px;
+      border: 1px solid var(--md-border);
+      background: var(--bg-shell);
+    }
+    .snippet-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+    .snippet-code {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 10.5px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 64px;
+      overflow-y: auto;
+      padding: 4px 6px;
+      border-radius: 4px;
+      background: var(--md-surface);
+      border: 1px solid var(--md-border);
+      color: var(--md-fg);
+    }
+    .snippet-actions {
+      display: flex;
+      gap: 4px;
+    }
+    .snip-btn {
+      flex: 1;
+      padding: 3px 5px;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 4px;
+      border: 1px solid var(--md-border);
+      background: var(--md-surface);
+      color: var(--md-fg);
+      cursor: pointer;
+      text-align: center;
+    }
+    .snip-btn:hover {
+      border-color: var(--md-primary);
+      color: var(--md-primary);
+    }
+    .snip-btn.run {
+      background: var(--md-primary);
+      border-color: var(--md-primary);
+      color: #ffffff;
     }
 
     .status-led {
@@ -2198,6 +2450,7 @@ class AgentCockpitProvider {
 
   <!-- Material Footer -->
   <div class="footer-bar">
+    <div id="cmds-drawer" class="drawer-pane"></div>
     <div id="git-drawer" class="drawer-pane"></div>
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
@@ -2219,11 +2472,11 @@ class AgentCockpitProvider {
     </div>
 
     <div class="footer-tabs">
+      <button id="tab-cmds" class="footer-btn" title="Copy AI responses, code blocks, or run AI terminal commands">Cmds (<span id="cmds-count">0</span>)</button>
       <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
       <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
       <button id="tab-git" class="footer-btn" title="View uncommitted Git changes">Git (<span id="git-count">0</span>)</button>
-      <button id="tab-notes" class="footer-btn" title="Shared handoff notes">Notes</button>
-      <button id="tab-send" class="footer-btn" title="Send editor @file:line selection (Ctrl+Alt+S)">@Line</button>
+      <button id="tab-notes" class="footer-btn" title="Shared handoff notes & @file:line">Notes</button>
     </div>
   </div>
 
@@ -2285,38 +2538,57 @@ class AgentCockpitProvider {
     const quickPromptInput = document.getElementById("quick-prompt-input");
     const quickPromptBtn = document.getElementById("quick-prompt-btn");
 
+    const cmdsDrawer = document.getElementById("cmds-drawer");
     const gitDrawer = document.getElementById("git-drawer");
     const mcpDrawer = document.getElementById("mcp-drawer");
     const skillsDrawer = document.getElementById("skills-drawer");
     const notesDrawer = document.getElementById("notes-drawer");
 
+    const cmdsCount = document.getElementById("cmds-count");
     const gitCount = document.getElementById("git-count");
     const mcpCount = document.getElementById("mcp-count");
     const skillsCount = document.getElementById("skills-count");
     const handoffText = document.getElementById("handoff-text");
 
+    const tabCmds = document.getElementById("tab-cmds");
     const tabMcp = document.getElementById("tab-mcp");
     const tabSkills = document.getElementById("tab-skills");
     const tabGit = document.getElementById("tab-git");
     const tabNotes = document.getElementById("tab-notes");
 
+    const COLOR_PALETTE = [
+      "#3b82f6",
+      "#e07a5f",
+      "#10b981",
+      "#8b5cf6",
+      "#f59e0b",
+      "#ec4899",
+    ];
+
     function setFooterDrawer(which) {
       state.activeFooter = state.activeFooter === which ? null : which;
+      cmdsDrawer.classList.toggle("open", state.activeFooter === "cmds");
       mcpDrawer.classList.toggle("open", state.activeFooter === "mcp");
       skillsDrawer.classList.toggle("open", state.activeFooter === "skills");
       gitDrawer.classList.toggle("open", state.activeFooter === "git");
       notesDrawer.classList.toggle("open", state.activeFooter === "notes");
 
+      tabCmds.classList.toggle("active", state.activeFooter === "cmds");
       tabMcp.classList.toggle("active", state.activeFooter === "mcp");
       tabSkills.classList.toggle("active", state.activeFooter === "skills");
       tabGit.classList.toggle("active", state.activeFooter === "git");
       tabNotes.classList.toggle("active", state.activeFooter === "notes");
 
-      if (state.activeFooter === "git" || state.activeFooter === "mcp") {
+      if (
+        state.activeFooter === "git" ||
+        state.activeFooter === "mcp" ||
+        state.activeFooter === "cmds"
+      ) {
         vscode.postMessage({ type: "refreshGit" });
       }
     }
 
+    tabCmds.addEventListener("click", () => setFooterDrawer("cmds"));
     tabMcp.addEventListener("click", () => setFooterDrawer("mcp"));
     tabSkills.addEventListener("click", () => setFooterDrawer("skills"));
     tabGit.addEventListener("click", () => setFooterDrawer("git"));
@@ -2418,10 +2690,6 @@ class AgentCockpitProvider {
       }
     });
     quickPromptBtn.addEventListener("click", submitQuickPrompt);
-
-    document.getElementById("tab-send").addEventListener("click", () => {
-      vscode.postMessage({ type: "sendSelection" });
-    });
 
     document.getElementById("save-notes").addEventListener("click", () => {
       vscode.postMessage({ type: "saveHandoff", content: handoffText.value });
@@ -2527,13 +2795,14 @@ class AgentCockpitProvider {
       customOpt.textContent = "+ Custom CLI…";
       cliDropdown.appendChild(customOpt);
 
-      // Material Session Cards
+      // Material Session Cards (with Pinning & Color Coding)
       sessionList.innerHTML = "";
       if (!msg.sessions || msg.sessions.length === 0) {
-        sessionList.innerHTML = '<div class="empty-card">Click an agent button above to launch a session</div>';
+        sessionList.innerHTML = '<div class="empty-card">Click Launch above to start an agent session</div>';
       } else {
         msg.sessions.forEach((s) => {
           const isStopped = s.status === "stopped";
+          const cardColor = s.color || "#3b82f6";
           const tagInfo = statusLabelFor(s.status, s.folderName);
           const shortcutBadge = s.index <= 5 ? '<span class="shortcut-pill">⌃' + s.index + '</span>' : '';
           const card = document.createElement("div");
@@ -2541,19 +2810,39 @@ class AgentCockpitProvider {
             "session-card" +
             (s.id === msg.activeSessionId ? " active" : "") +
             (isStopped ? " stopped" : "");
+          card.style.borderLeft = "4px solid " + cardColor;
           card.title = isStopped
             ? "Paused — Click to resume conversation (" + s.folderName + ")"
             : "Status: " + s.status + " · Folder: " + s.cwd + " · Double-click title to rename";
+
+          const swatchesHtml = COLOR_PALETTE.map(
+            (c) =>
+              '<span class="color-swatch" data-color="' +
+              c +
+              '" style="background:' +
+              c +
+              ';"></span>'
+          ).join("");
+
           card.innerHTML =
-            '<span class="status-led led-' + s.status + '"></span>' +
-            '<span class="agent-dot" style="background:' + (s.color || "#3b82f6") + ';">' + s.badge + '</span>' +
-            '<span class="s-title">' + s.title + '</span>' +
-            '<span class="state-tag ' + tagInfo.cls + '">' + tagInfo.text + '</span>' +
-            shortcutBadge +
-            '<div class="row-actions">' +
-              '<button class="icon-action act-rename" title="Rename">✎</button>' +
-              '<button class="icon-action act-send" title="Send @file:line">@</button>' +
-              '<button class="icon-action danger act-delete" title="Remove session">✕</button>' +
+            '<div class="session-card-main">' +
+              '<span class="status-led led-' + s.status + '"></span>' +
+              '<span class="agent-dot act-color" title="Click to change color" style="background:' + cardColor + ';">' + s.badge + '</span>' +
+              (s.pinned ? '<span class="pin-marker" title="Pinned">📌</span>' : '') +
+              '<span class="s-title">' + s.title + '</span>' +
+              '<span class="state-tag ' + tagInfo.cls + '">' + tagInfo.text + '</span>' +
+              shortcutBadge +
+              '<div class="row-actions">' +
+                '<button class="icon-action act-pin" title="' + (s.pinned ? "Unpin session" : "Pin/Bookmark session") + '">📌</button>' +
+                '<button class="icon-action act-palette" title="Color code session">🎨</button>' +
+                '<button class="icon-action act-rename" title="Rename">✎</button>' +
+                '<button class="icon-action act-send" title="Send @file:line">@</button>' +
+                '<button class="icon-action danger act-delete" title="Remove session">✕</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="color-palette-row">' +
+              '<span style="font-size:10px;color:var(--md-muted);">Color:</span>' +
+              swatchesHtml +
             '</div>';
 
           card.addEventListener("click", () => {
@@ -2565,6 +2854,31 @@ class AgentCockpitProvider {
           card.querySelector(".s-title").addEventListener("dblclick", (e) => {
             e.stopPropagation();
             startInlineRename(card, s);
+          });
+
+          const paletteRow = card.querySelector(".color-palette-row");
+          const togglePalette = (e) => {
+            e.stopPropagation();
+            paletteRow.classList.toggle("open");
+          };
+          card.querySelector(".act-color").addEventListener("click", togglePalette);
+          card.querySelector(".act-palette").addEventListener("click", togglePalette);
+
+          card.querySelectorAll(".color-swatch").forEach((sw) => {
+            sw.addEventListener("click", (e) => {
+              e.stopPropagation();
+              const chosen = sw.getAttribute("data-color");
+              vscode.postMessage({
+                type: "setSessionColor",
+                id: s.id,
+                color: chosen,
+              });
+            });
+          });
+
+          card.querySelector(".act-pin").addEventListener("click", (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ type: "togglePinSession", id: s.id });
           });
           card.querySelector(".act-rename").addEventListener("click", (e) => {
             e.stopPropagation();
@@ -2579,6 +2893,79 @@ class AgentCockpitProvider {
             vscode.postMessage({ type: "deleteSession", id: s.id });
           });
           sessionList.appendChild(card);
+        });
+      }
+
+      // Render AI Generated Output, Code Blocks & Terminal Commands
+      const snips = msg.aiSnippets || [];
+      cmdsCount.textContent = String(snips.length);
+      cmdsDrawer.innerHTML = "";
+      if (snips.length === 0) {
+        cmdsDrawer.innerHTML = '<div style="color:var(--md-muted);text-align:center;padding:6px 0;">AI responses & terminal commands will appear here for 1-click Copy or Run</div>';
+      } else {
+        snips.forEach((sn) => {
+          const box = document.createElement("div");
+          box.className = "snippet-card";
+          const badgeText =
+            sn.kind === "command"
+              ? "⚡ Terminal Command"
+              : sn.kind === "response"
+              ? "💬 Latest AI Response"
+              : "📄 Code (" + sn.language + ")";
+          const preview = document.createElement("pre");
+          preview.className = "snippet-code";
+          preview.textContent = sn.content;
+
+          const header = document.createElement("div");
+          header.className = "snippet-header";
+          header.innerHTML =
+            '<span class="scope-pill">' + badgeText + '</span>' +
+            '<span style="font-size:10px;color:var(--md-muted);">' + sn.sessionTitle + '</span>';
+
+          const actions = document.createElement("div");
+          actions.className = "snippet-actions";
+
+          const copyBtn = document.createElement("button");
+          copyBtn.className = "snip-btn";
+          copyBtn.textContent = "📋 Copy";
+          copyBtn.addEventListener("click", () => {
+            vscode.postMessage({ type: "copyToClipboard", text: sn.content });
+            copyBtn.textContent = "✓ Copied";
+            setTimeout(() => { copyBtn.textContent = "📋 Copy"; }, 1400);
+          });
+          actions.appendChild(copyBtn);
+
+          if (sn.kind === "command" || sn.kind === "code") {
+            const sendTermBtn = document.createElement("button");
+            sendTermBtn.className = "snip-btn";
+            sendTermBtn.textContent = "⇥ To Terminal";
+            sendTermBtn.title = "Insert into active terminal prompt without running yet";
+            sendTermBtn.addEventListener("click", () => {
+              vscode.postMessage({
+                type: "sendCommandToTerminal",
+                command: sn.content,
+                execute: false,
+              });
+            });
+            actions.appendChild(sendTermBtn);
+
+            const runShellBtn = document.createElement("button");
+            runShellBtn.className = "snip-btn run";
+            runShellBtn.textContent = "▶ Run in Shell";
+            runShellBtn.title = "Execute immediately in a PowerShell terminal tab";
+            runShellBtn.addEventListener("click", () => {
+              vscode.postMessage({
+                type: "runCommandInShell",
+                command: sn.content,
+              });
+            });
+            actions.appendChild(runShellBtn);
+          }
+
+          box.appendChild(header);
+          box.appendChild(preview);
+          box.appendChild(actions);
+          cmdsDrawer.appendChild(box);
         });
       }
 
