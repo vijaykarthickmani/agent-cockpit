@@ -1290,7 +1290,12 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         match.title = disc.title;
         match.hasCustomTitle = true;
         changed = true;
-        if (isTerminalAlive(match.terminal)) {
+        // Only rename the VS Code tab when this session's terminal is the active one,
+        // otherwise renameWithArg would rename the wrong (currently focused) terminal.
+        if (
+          isTerminalAlive(match.terminal) &&
+          vscode.window.activeTerminal === match.terminal
+        ) {
           void vscode.commands
             .executeCommand("workbench.action.terminal.renameWithArg", {
               name: disc.title,
@@ -1387,8 +1392,38 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     return changed;
   }
 
+  /**
+   * Finds an already-open VS Code terminal belonging to this session (e.g. restored after
+   * a window reload, or whose reference was lost) so we re-attach instead of opening a duplicate.
+   */
+  private _findOrphanTerminal(s: CockpitSession): vscode.Terminal | undefined {
+    const claimed = new Set(
+      this._sessions
+        .filter((o) => o !== s && o.terminal)
+        .map((o) => o.terminal as vscode.Terminal)
+    );
+    const folder = path.basename(s.cwd) || s.cwd;
+    const candidates = vscode.window.terminals.filter(
+      (t) => !claimed.has(t) && t.exitStatus === undefined
+    );
+    return (
+      candidates.find((t) => t.name === `${s.title} · ${folder}`) ||
+      candidates.find((t) => t.name === s.title) ||
+      candidates.find(
+        (t) => s.title.length > 2 && t.name.startsWith(s.title)
+      ) ||
+      (s.cliSessionName
+        ? candidates.find((t) => t.name.startsWith(s.cliSessionName as string))
+        : undefined)
+    );
+  }
+
   private _syncLiveness() {
     for (const s of this._sessions) {
+      if (!isTerminalAlive(s.terminal)) {
+        const orphan = this._findOrphanTerminal(s);
+        s.terminal = orphan;
+      }
       if (isTerminalAlive(s.terminal)) {
         if (s.status === "stopped") {
           s.status = "idle";
@@ -1853,6 +1888,9 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     this._activeSessionId = found.id;
     this._currentCwd = found.cwd;
 
+    if (!isTerminalAlive(found.terminal)) {
+      found.terminal = this._findOrphanTerminal(found);
+    }
     if (isTerminalAlive(found.terminal)) {
       if (found.status === "stopped") found.status = "idle";
       found.terminal.show(false);
@@ -1871,12 +1909,22 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const found = this._sessions.find((s) => s.id === id);
     if (!found) return;
 
-    if (found.terminal && isTerminalAlive(found.terminal)) {
+    // Never open a duplicate: if the terminal is still open (or an orphaned matching one exists), just focus it
+    if (!isTerminalAlive(found.terminal)) {
+      found.terminal = this._findOrphanTerminal(found);
+    }
+    if (isTerminalAlive(found.terminal)) {
+      found.status = found.status === "stopped" ? "idle" : found.status;
+      this._activeSessionId = found.id;
+      this._currentCwd = found.cwd;
+      found.terminal.show(false);
       try {
-        found.terminal.dispose();
+        await vscode.commands.executeCommand("workbench.action.terminal.focus");
       } catch {
         // ignore
       }
+      await this.refreshWebviewState();
+      return;
     }
 
     const cwd = fs.existsSync(found.cwd) ? found.cwd : this._currentCwd;
@@ -1993,6 +2041,57 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       } catch {
         // ignore
       }
+    }
+  }
+
+  /**
+   * Captures currently highlighted text from either the active Terminal or active Text Editor,
+   * cleans common TUI border/prompt prefixes, and runs it in Shell or sends it to the active terminal.
+   */
+  public async handleHighlightedTextAction(mode: "runInShell" | "sendToTerminal") {
+    let selectedText = "";
+    const editor = vscode.window.activeTextEditor;
+
+    if (editor && !editor.selection.isEmpty) {
+      selectedText = editor.document.getText(editor.selection);
+    } else {
+      // Copy highlighted text from the focused terminal
+      const prevClipboard = await vscode.env.clipboard.readText();
+      try {
+        await vscode.commands.executeCommand(
+          "workbench.action.terminal.copySelection"
+        );
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        selectedText = await vscode.env.clipboard.readText();
+      } catch {
+        selectedText = prevClipboard;
+      }
+    }
+
+    const cleaned = selectedText
+      .split(/\r?\n/)
+      .map((line) =>
+        line
+          .replace(/^[│┃|]\s?/, "")
+          .replace(/\s?[│┃|]$/, "")
+          .replace(/^\s*(?:PS [^>]+>|\$|❯|>)\s+/, "")
+          .trim()
+      )
+      .filter((line) => line.length > 0)
+      .join("\n")
+      .trim();
+
+    if (!cleaned) {
+      vscode.window.showWarningMessage(
+        "Highlight text or a command first, then right-click → Agent Cockpit."
+      );
+      return;
+    }
+
+    if (mode === "runInShell") {
+      await this._runCommandInShellSession(cleaned);
+    } else {
+      await this.sendTextToActiveAgent(cleaned, false);
     }
   }
 
@@ -2700,7 +2799,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     }
     .footer-tabs {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 4px;
     }
     .footer-btn {
@@ -2822,7 +2921,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
   <!-- Material Footer -->
   <div class="footer-bar">
-    <div id="cmds-drawer" class="drawer-pane"></div>
     <div id="git-drawer" class="drawer-pane"></div>
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
@@ -2844,11 +2942,10 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     </div>
 
     <div class="footer-tabs">
-      <button id="tab-cmds" class="footer-btn" title="Copy AI responses, code blocks, or run AI terminal commands">Cmds (<span id="cmds-count">0</span>)</button>
       <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
       <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
       <button id="tab-git" class="footer-btn" title="View uncommitted Git changes">Git (<span id="git-count">0</span>)</button>
-      <button id="tab-notes" class="footer-btn" title="Shared handoff notes & @file:line">Notes</button>
+      <button id="tab-notes" class="footer-btn" title="Shared handoff notes">Notes</button>
     </div>
   </div>
 
@@ -2910,19 +3007,16 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const quickPromptInput = document.getElementById("quick-prompt-input");
     const quickPromptBtn = document.getElementById("quick-prompt-btn");
 
-    const cmdsDrawer = document.getElementById("cmds-drawer");
     const gitDrawer = document.getElementById("git-drawer");
     const mcpDrawer = document.getElementById("mcp-drawer");
     const skillsDrawer = document.getElementById("skills-drawer");
     const notesDrawer = document.getElementById("notes-drawer");
 
-    const cmdsCount = document.getElementById("cmds-count");
     const gitCount = document.getElementById("git-count");
     const mcpCount = document.getElementById("mcp-count");
     const skillsCount = document.getElementById("skills-count");
     const handoffText = document.getElementById("handoff-text");
 
-    const tabCmds = document.getElementById("tab-cmds");
     const tabMcp = document.getElementById("tab-mcp");
     const tabSkills = document.getElementById("tab-skills");
     const tabGit = document.getElementById("tab-git");
@@ -2939,28 +3033,21 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
     function setFooterDrawer(which) {
       state.activeFooter = state.activeFooter === which ? null : which;
-      cmdsDrawer.classList.toggle("open", state.activeFooter === "cmds");
       mcpDrawer.classList.toggle("open", state.activeFooter === "mcp");
       skillsDrawer.classList.toggle("open", state.activeFooter === "skills");
       gitDrawer.classList.toggle("open", state.activeFooter === "git");
       notesDrawer.classList.toggle("open", state.activeFooter === "notes");
 
-      tabCmds.classList.toggle("active", state.activeFooter === "cmds");
       tabMcp.classList.toggle("active", state.activeFooter === "mcp");
       tabSkills.classList.toggle("active", state.activeFooter === "skills");
       tabGit.classList.toggle("active", state.activeFooter === "git");
       tabNotes.classList.toggle("active", state.activeFooter === "notes");
 
-      if (
-        state.activeFooter === "git" ||
-        state.activeFooter === "mcp" ||
-        state.activeFooter === "cmds"
-      ) {
+      if (state.activeFooter === "git" || state.activeFooter === "mcp") {
         vscode.postMessage({ type: "refreshGit" });
       }
     }
 
-    tabCmds.addEventListener("click", () => setFooterDrawer("cmds"));
     tabMcp.addEventListener("click", () => setFooterDrawer("mcp"));
     tabSkills.addEventListener("click", () => setFooterDrawer("skills"));
     tabGit.addEventListener("click", () => setFooterDrawer("git"));
@@ -3268,79 +3355,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      // Render AI Generated Output, Code Blocks & Terminal Commands
-      const snips = msg.aiSnippets || [];
-      cmdsCount.textContent = String(snips.length);
-      cmdsDrawer.innerHTML = "";
-      if (snips.length === 0) {
-        cmdsDrawer.innerHTML = '<div style="color:var(--md-muted);text-align:center;padding:6px 0;">AI responses & terminal commands will appear here for 1-click Copy or Run</div>';
-      } else {
-        snips.forEach((sn) => {
-          const box = document.createElement("div");
-          box.className = "snippet-card";
-          const badgeText =
-            sn.kind === "command"
-              ? "⚡ Terminal Command"
-              : sn.kind === "response"
-              ? "💬 Latest AI Response"
-              : "📄 Code (" + sn.language + ")";
-          const preview = document.createElement("pre");
-          preview.className = "snippet-code";
-          preview.textContent = sn.content;
-
-          const header = document.createElement("div");
-          header.className = "snippet-header";
-          header.innerHTML =
-            '<span class="scope-pill">' + badgeText + '</span>' +
-            '<span style="font-size:10px;color:var(--md-muted);">' + sn.sessionTitle + '</span>';
-
-          const actions = document.createElement("div");
-          actions.className = "snippet-actions";
-
-          const copyBtn = document.createElement("button");
-          copyBtn.className = "snip-btn";
-          copyBtn.textContent = "📋 Copy";
-          copyBtn.addEventListener("click", () => {
-            vscode.postMessage({ type: "copyToClipboard", text: sn.content });
-            copyBtn.textContent = "✓ Copied";
-            setTimeout(() => { copyBtn.textContent = "📋 Copy"; }, 1400);
-          });
-          actions.appendChild(copyBtn);
-
-          if (sn.kind === "command" || sn.kind === "code") {
-            const sendTermBtn = document.createElement("button");
-            sendTermBtn.className = "snip-btn";
-            sendTermBtn.textContent = "⇥ To Terminal";
-            sendTermBtn.title = "Insert into active terminal prompt without running yet";
-            sendTermBtn.addEventListener("click", () => {
-              vscode.postMessage({
-                type: "sendCommandToTerminal",
-                command: sn.content,
-                execute: false,
-              });
-            });
-            actions.appendChild(sendTermBtn);
-
-            const runShellBtn = document.createElement("button");
-            runShellBtn.className = "snip-btn run";
-            runShellBtn.textContent = "▶ Run in Shell";
-            runShellBtn.title = "Execute immediately in a PowerShell terminal tab";
-            runShellBtn.addEventListener("click", () => {
-              vscode.postMessage({
-                type: "runCommandInShell",
-                command: sn.content,
-              });
-            });
-            actions.appendChild(runShellBtn);
-          }
-
-          box.appendChild(header);
-          box.appendChild(preview);
-          box.appendChild(actions);
-          cmdsDrawer.appendChild(box);
-        });
-      }
-
       // Render MCP Servers & Status
       const mcps = msg.mcpServers || [];
       mcpCount.textContent = String(mcps.length);
@@ -3505,6 +3519,24 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("agentCockpit.sendSelection", () => {
       void provider.sendActiveEditorSelectionToAgent();
     })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "agentCockpit.runHighlightedCommand",
+      () => {
+        void provider.handleHighlightedTextAction("runInShell");
+      }
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "agentCockpit.sendHighlightedToTerminal",
+      () => {
+        void provider.handleHighlightedTextAction("sendToTerminal");
+      }
+    )
   );
 
   context.subscriptions.push(

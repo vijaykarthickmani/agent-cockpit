@@ -51,6 +51,14 @@
         "title": "Agent Cockpit: Send @file:line Selection to Active Agent"
       },
       {
+        "command": "agentCockpit.runHighlightedCommand",
+        "title": "Agent Cockpit: Run Highlighted Command in Shell"
+      },
+      {
+        "command": "agentCockpit.sendHighlightedToTerminal",
+        "title": "Agent Cockpit: Send Highlighted Text to Active Terminal"
+      },
+      {
         "command": "agentCockpit.openHandoff",
         "title": "Agent Cockpit: Open .agent/handoff.md Scratchpad"
       },
@@ -80,6 +88,24 @@
         {
           "command": "agentCockpit.sendSelection",
           "group": "navigation@1"
+        },
+        {
+          "command": "agentCockpit.runHighlightedCommand",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentCockpit.sendHighlightedToTerminal",
+          "group": "navigation@3"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "agentCockpit.runHighlightedCommand",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "agentCockpit.sendHighlightedToTerminal",
+          "group": "1_modification@2"
         }
       ]
     },
@@ -94,6 +120,11 @@
         "key": "ctrl+alt+s",
         "mac": "cmd+alt+s",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "agentCockpit.runHighlightedCommand",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r"
       },
       {
         "command": "agentCockpit.switchSession1",
