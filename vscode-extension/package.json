@@ -3,7 +3,9 @@
   "displayName": "Agent Cockpit — Multi-Agent CLI Terminal Manager",
   "description": "Run and switch between interactive CLI coding agents (Claude Code, Codex, Gemini CLI, shells) as full-height Editor Tabs with cwd picker, isolated Git worktrees, live git status/diff, and @file:line context injection.",
   "version": "0.1.1",
-  "publisher": "thulir-inc",
+  "publisher": "ThulirLabs",
+  "license": "MIT",
+  "icon": "resources/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/vijaykarthickmani/agent-cockpit.git"
