@@ -1,12 +1,12 @@
-# Agent Cockpit — VS Code & Antigravity IDE Extension
+# Agent Cockpit — Multi-Agent CLI Terminal Manager
 
-Run, organize, hand off, and schedule multiple interactive CLI coding agents (`agy`, `claude`, `codex`, `gemini`, `powershell`, `cmd`) directly inside VS Code and Antigravity IDE.
+Run, organize, hand off, and schedule multiple interactive CLI coding agents (`claude`, `codex`, `gemini`, `aider`, `agy`, `powershell`, `cmd`, or any custom CLI) directly inside VS Code and VS Code-compatible editors.
 
 ## Highlights
 
 - **Auto-Detected Installed CLIs** with 1-click launch for your last used CLI.
 - **Pinned + Project-Grouped Sessions** with explicit hover **Resume (`▶`)** / **Stop (`■`)** controls (no accidental auto-resume on click).
-- **1-Click Chat-to-Chat Handoff (`⇄`)** generating `.agent/handoff.md` from `agy` / `claude` transcripts and sending it to any existing or newly launched CLI session.
+- **1-Click Chat-to-Chat Handoff (`⇄`)** generating `.agent/handoff.md` from session transcripts and sending it to any existing or newly launched CLI session.
 - **Native Expandable Chat Timeline** below `Cockpit Control` showing every user question and expandable AI reply preview.
 - **In-IDE Automated Scheduled Jobs** (`Jobs` tab) supporting interval, daily, and weekday schedules.
 - **Highlight → Run / Send** via `Ctrl+Alt+R`, `Ctrl+Alt+T`, or the `▶` / `>_` terminal tab title bar buttons.

@@ -368,7 +368,7 @@
     <section class="hero">
       <h1>One Cockpit for All Your CLI Coding Agents</h1>
       <p>
-        Run, switch, pin, hand off, and schedule interactive CLI agents (<code>agy</code>, <code>claude</code>, <code>codex</code>, <code>gemini</code>, <code>ps1</code>) natively inside VS Code &amp; Antigravity IDE — keeping the full raw interactive terminal intact.
+        Run, switch, pin, hand off, and schedule interactive CLI agents (<code>claude</code>, <code>codex</code>, <code>gemini</code>, <code>aider</code>, <code>agy</code>, <code>ps1</code>, or any custom CLI) natively inside VS Code — keeping the full raw interactive terminal intact.
       </p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="#demo">Try Interactive Demo</a>
@@ -386,10 +386,12 @@
             <span>Zen · WT</span>
           </div>
           <div class="mock-launch">
-            <button id="demo-launch">+ New Antigravity</button>
+            <button id="demo-launch">+ New Claude</button>
             <select id="demo-cli">
-              <option value="agy">Antigravity (agy)</option>
               <option value="claude">Claude Code</option>
+              <option value="codex">Codex CLI</option>
+              <option value="gemini">Gemini CLI</option>
+              <option value="aider">Aider</option>
               <option value="ps1">PowerShell</option>
             </select>
           </div>
@@ -455,7 +457,7 @@
   </main>
 
   <footer>
-    <span>Agent Cockpit · Built for VS Code &amp; Antigravity IDE</span>
+    <span>Agent Cockpit · Terminal-First Multi-Agent CLI Workspace</span>
     <div style="display:flex;gap:16px;">
       <a href="https://github.com/vijaykarthick4588/agent-cockpit" target="_blank">GitHub</a>
       <a href="https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+" target="_blank">Report a Bug</a>
@@ -469,7 +471,7 @@
         id: "s1",
         title: "Auth Refactor",
         project: "Pinned",
-        cli: "agy",
+        cli: "codex",
         color: "#ec4899",
         status: "live",
         timeline: [
