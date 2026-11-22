@@ -586,8 +586,8 @@ function discoverAgySessions(defaultCwd) {
                         lastObj.type === "PLANNER_RESPONSE" &&
                         lastObj.status === "DONE" &&
                         !lastObj.tool_calls;
-                    // Only mark complete after transcript has been quiet for >= 4.5s after a final response
-                    if (isFinalModelResponse && quietMs >= 4500) {
+                    // Mark complete once final non-tool DONE response has settled (>= 1.0s)
+                    if (isFinalModelResponse && quietMs >= 1000) {
                         isTurnComplete = true;
                         if (typeof lastObj.content === "string" &&
                             /\?\s*$|\[y\/n\]|approve|allow/i.test(lastObj.content.slice(-200))) {
@@ -729,7 +729,7 @@ function parseClaudeJsonlMeta(filePath) {
             cwd: detectedCwd,
             runtimeHint,
             lastUserTurnId,
-            isTurnComplete: isTurnComplete && quietMs >= 2500,
+            isTurnComplete: isTurnComplete && quietMs >= 1000,
             snippets: extractSnippetsFromMarkdown(combinedMd, cleaned || "Claude"),
         };
     }
@@ -1453,7 +1453,7 @@ class AgentCockpitProvider {
             if (cliChanged || jobsFired) {
                 void this.refreshWebviewState();
             }
-        }, 2500);
+        }, 1500);
         this._context.subscriptions.push({
             dispose: () => clearInterval(this._pollTimer),
         });
@@ -1590,7 +1590,7 @@ class AgentCockpitProvider {
                 if (disc.isTurnComplete &&
                     disc.lastUserTurnId &&
                     match.lastNotifiedUserTurnId !== disc.lastUserTurnId &&
-                    now - (match.lastChimeAt || 0) > 8000) {
+                    now - (match.lastChimeAt || 0) > 1500) {
                     match.lastNotifiedUserTurnId = disc.lastUserTurnId;
                     match.lastChimeAt = now;
                     this._triggerNotificationSound(disc.runtimeHint === "needs-input" ? "approval" : "complete", match.title);
