@@ -4382,8 +4382,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             item.turn +
             ": " +
             item.fullQuestion +
-            (item.replyPreview ? "\n\nAI: " + item.replyPreview : "") +
-            "\n\nClick to find in terminal";
+            (item.replyPreview ? "\\n\\nAI: " + item.replyPreview : "") +
+            "\\n\\nClick to find in terminal";
 
           row.innerHTML =
             '<span class="timeline-dot"></span>' +
@@ -4508,7 +4508,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             j.nextRunText +
             " · Last: " +
             j.lastRunText +
-            "\nPrompt: " +
+            "\\nPrompt: " +
             j.prompt;
           r.innerHTML =
             '<span class="status-led ' + (j.enabled ? "led-working" : "led-stopped") + '"></span>' +
