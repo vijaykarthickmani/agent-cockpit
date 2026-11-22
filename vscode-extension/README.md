@@ -1,11 +1,27 @@
-# Agent Cockpit — VS Code Extension
+# Agent Cockpit — VS Code & Antigravity IDE Extension
 
-Run and switch between interactive CLI coding agents (**Claude Code**, **Codex CLI**, **Gemini CLI**, **PowerShell**) as full-height VS Code Editor Tabs or Panel terminals.
+Run, organize, hand off, and schedule multiple interactive CLI coding agents (`agy`, `claude`, `codex`, `gemini`, `powershell`, `cmd`) directly inside VS Code and Antigravity IDE.
 
-## Key Features
-- **Quick-Spawn CLI Presets & Custom Commands**: Launch `claude`, `codex`, `gemini`, or custom commands pointed at any working directory (`cwd`).
-- **Full-Height Editor Tab or Bottom Panel Placement**: Toggle between opening agent terminals as full-height Editor Tabs side-by-side with your code or in the Bottom Terminal Panel.
-- **Isolated Git Worktree Spawner**: Check *"Isolate in new Git Worktree"* to automatically run `git worktree add -b agent/<task>` and start the agent inside a dedicated worktree folder.
-- **1-Click `@file:line` Context Injection (`Ctrl+Alt+S`)**: Highlight code in any editor and press `Ctrl+Alt+S` (or right-click → *Agent Cockpit: Send @file:line Selection to Active Agent*) to insert `@path/to/file.ts:10-25` into the active agent's terminal.
-- **Live Git Status & Diff Viewer**: Inspect modified/untracked files in the active session's `cwd`, open VS Code's native side-by-side Git diff in one click, or `@File` mention them directly into the terminal.
-- **Handoff Scratchpad (`.agent/handoff.md`)**: Save and send task handoff context between agents.
+## Highlights
+
+- **Auto-Detected Installed CLIs** with 1-click launch for your last used CLI.
+- **Pinned + Project-Grouped Sessions** with explicit hover **Resume (`▶`)** / **Stop (`■`)** controls (no accidental auto-resume on click).
+- **1-Click Chat-to-Chat Handoff (`⇄`)** generating `.agent/handoff.md` from `agy` / `claude` transcripts and sending it to any existing or newly launched CLI session.
+- **Native Expandable Chat Timeline** below `Cockpit Control` showing every user question and expandable AI reply preview.
+- **In-IDE Automated Scheduled Jobs** (`Jobs` tab) supporting interval, daily, and weekday schedules.
+- **Highlight → Run / Send** via `Ctrl+Alt+R`, `Ctrl+Alt+T`, or the `▶` / `>_` terminal tab title bar buttons.
+- **MCP Servers & Skills Discovery**, **Zen Mode** tab toggle, **Git Worktree (`WT`)** isolation, and smart end-of-turn chime.
+
+## Shortcuts
+
+- `Ctrl+Alt+N` — Launch New CLI Session
+- `Ctrl+Alt+1..5` — Switch to Session 1–5
+- `Ctrl+Alt+R` — Run Highlighted Command in Shell
+- `Ctrl+Alt+T` — Send Highlighted Text to Active Terminal
+- `Ctrl+Alt+S` — Send `@file:line` Selection to Active Agent
+
+## Issues & Feedback
+
+- [Report a Bug](https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+)
+- [Request a Feature / Give Feedback](https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+)
+- [GitHub Repository](https://github.com/vijaykarthick4588/agent-cockpit)

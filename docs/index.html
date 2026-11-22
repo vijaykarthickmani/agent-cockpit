@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Cockpit — Interactive Demo & Guide</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --sidebar: #1e1e1e;
+      --sidebar-hover: #2a2d2e;
+      --sidebar-active: #37373d;
+      --border: #30363d;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --accent: #007acc;
+      --accent-hover: #1b8cd8;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --cyan: #38bdf8;
+    }
+    body.light {
+      --bg: #f6f8fa;
+      --surface: #ffffff;
+      --sidebar: #f3f3f3;
+      --sidebar-hover: #e8e8e8;
+      --sidebar-active: #dfe7f2;
+      --border: #d0d7de;
+      --fg: #1f2328;
+      --muted: #656d76;
+      --accent: #0066b8;
+      --accent-hover: #005499;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 13px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--fg);
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .btn:hover { background: var(--sidebar-hover); text-decoration: none; }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 40px 24px 64px;
+      display: flex;
+      flex-direction: column;
+      gap: 48px;
+    }
+
+    .hero {
+      text-align: center;
+      max-width: 720px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      align-items: center;
+    }
+    .hero h1 {
+      font-size: 34px;
+      line-height: 1.2;
+      letter-spacing: -0.5px;
+    }
+    .hero p {
+      color: var(--muted);
+      font-size: 15.5px;
+    }
+    .hero-cta {
+      display: flex;
+      gap: 10px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* Interactive IDE Mock */
+    .ide-frame {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--sidebar);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+      display: grid;
+      grid-template-columns: 290px 1fr;
+      min-height: 460px;
+    }
+    @media (max-width: 780px) {
+      .ide-frame { grid-template-columns: 1fr; }
+    }
+    .mock-sidebar {
+      border-right: 1px solid var(--border);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .mock-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      padding: 2px 4px;
+    }
+    .mock-launch {
+      display: flex;
+      gap: 4px;
+    }
+    .mock-launch button {
+      flex: 1;
+      height: 26px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .mock-launch select {
+      width: 110px;
+      height: 26px;
+      background: var(--surface);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 11px;
+      padding: 0 5px;
+    }
+    .sec-hdr {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 6px 2px;
+    }
+    .sess-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      height: 28px;
+      padding: 0 6px;
+      border-radius: 4px;
+      border-left: 2px solid transparent;
+      cursor: pointer;
+    }
+    .sess-row:hover { background: var(--sidebar-hover); }
+    .sess-row.active {
+      background: var(--sidebar-active);
+      border-left-color: var(--accent);
+    }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .dot-live { background: var(--green); }
+    .dot-idle { background: var(--cyan); }
+    .dot-paused { background: var(--muted); opacity: 0.5; }
+    .sess-name {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cli-pill {
+      font-family: Consolas, monospace;
+      font-size: 10px;
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .mock-footer {
+      margin-top: auto;
+      border-top: 1px solid var(--border);
+      padding-top: 6px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2px;
+    }
+    .mock-ftab {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      font-size: 11px;
+      padding: 4px 0;
+      cursor: pointer;
+    }
+    .mock-ftab.active {
+      color: var(--fg);
+      font-weight: 600;
+      border-bottom-color: var(--accent);
+    }
+    .mock-timeline {
+      border-top: 1px solid var(--border);
+      padding-top: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .tl-item {
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-size: 11.5px;
+      cursor: pointer;
+      color: var(--fg);
+    }
+    .tl-item:hover { background: var(--sidebar-hover); }
+    .tl-reply {
+      font-size: 11px;
+      color: var(--muted);
+      padding: 2px 6px 4px 18px;
+    }
+
+    .mock-terminal {
+      background: var(--bg);
+      padding: 18px 20px;
+      font-family: Consolas, "Cascadia Code", monospace;
+      font-size: 12.5px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .term-tabbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+    }
+    .term-log {
+      white-space: pre-wrap;
+      color: var(--fg);
+      line-height: 1.6;
+    }
+    .muted { color: var(--muted); }
+    .accent { color: var(--cyan); }
+    .ok { color: var(--green); }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .card h3 { font-size: 14.5px; }
+    .card p { font-size: 13px; color: var(--muted); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    kbd {
+      font-family: Consolas, monospace;
+      font-size: 11.5px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    footer {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 8V5a2 2 0 0 1 2-2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/>
+        <path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/>
+        <path d="M8.5 15.5L12 7.5l3.5 8-3.5-2-3.5 2z"/>
+      </svg>
+      <span>Agent Cockpit</span>
+    </div>
+    <div class="nav-actions">
+      <button id="theme-btn" class="btn">Toggle Light / Dark</button>
+      <a class="btn" href="https://github.com/vijaykarthick4588/agent-cockpit" target="_blank">GitHub Repo</a>
+      <a class="btn btn-primary" href="https://github.com/vijaykarthick4588/agent-cockpit/issues/new" target="_blank">Report Issue / Feedback</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>One Cockpit for All Your CLI Coding Agents</h1>
+      <p>
+        Run, switch, pin, hand off, and schedule interactive CLI agents (<code>agy</code>, <code>claude</code>, <code>codex</code>, <code>gemini</code>, <code>ps1</code>) natively inside VS Code &amp; Antigravity IDE — keeping the full raw interactive terminal intact.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#demo">Try Interactive Demo</a>
+        <a class="btn" href="https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+" target="_blank">Report a Bug</a>
+        <a class="btn" href="https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+" target="_blank">Request a Feature</a>
+      </div>
+    </section>
+
+    <!-- Interactive Demo -->
+    <section id="demo">
+      <div class="ide-frame">
+        <aside class="mock-sidebar">
+          <div class="mock-topbar">
+            <span>COCKPIT CONTROL</span>
+            <span>Zen · WT</span>
+          </div>
+          <div class="mock-launch">
+            <button id="demo-launch">+ New Antigravity</button>
+            <select id="demo-cli">
+              <option value="agy">Antigravity (agy)</option>
+              <option value="claude">Claude Code</option>
+              <option value="ps1">PowerShell</option>
+            </select>
+          </div>
+
+          <div class="sec-hdr"><span>Pinned</span><span>1</span></div>
+          <div id="demo-sessions"></div>
+
+          <div class="mock-timeline">
+            <div class="sec-hdr" style="padding-top:2px;">
+              <span>Chat Timeline</span>
+              <span id="tl-count">2</span>
+            </div>
+            <div id="demo-timeline"></div>
+          </div>
+
+          <div class="mock-footer">
+            <button class="mock-ftab active" data-tab="mcp">MCP (4)</button>
+            <button class="mock-ftab" data-tab="skills">Skills (12)</button>
+            <button class="mock-ftab" data-tab="jobs">Jobs (2)</button>
+          </div>
+        </aside>
+
+        <div class="mock-terminal">
+          <div class="term-tabbar">
+            <strong id="term-title">Auth Refactor · Thulir Inc</strong>
+            <span class="muted">▶ Run Selection (Ctrl+Alt+R) · >_ Send (Ctrl+Alt+T)</span>
+          </div>
+          <div id="term-body" class="term-log"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid-3">
+      <div class="card">
+        <h3>1-Click Chat-to-Chat Handoff</h3>
+        <p>Click <strong>⇄</strong> on any chat to extract its recent prompts, AI progress, and Git status into <code>.agent/handoff.md</code> and send it to an existing or brand-new CLI session.</p>
+      </div>
+      <div class="card">
+        <h3>Native Expandable Chat Timeline</h3>
+        <p>Browse every question you asked in the selected chat right below Cockpit Control — expand any turn to preview the AI's reply, copy, or re-ask.</p>
+      </div>
+      <div class="card">
+        <h3>In-IDE Scheduled Jobs</h3>
+        <p>Automate recurring CLI prompts or test runs (every 15m/30m/1h, daily, or weekdays) while your IDE is open — with Run Now, Pause, and Delete controls.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 style="font-size:18px;margin-bottom:12px;">Keyboard Shortcuts</h2>
+      <table>
+        <thead>
+          <tr><th>Shortcut</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><kbd>Ctrl+Alt+N</kbd></td><td>Launch New CLI Agent Session</td></tr>
+          <tr><td><kbd>Ctrl+Alt+1</kbd> … <kbd>Ctrl+Alt+5</kbd></td><td>Switch to Agent Session 1–5</td></tr>
+          <tr><td><kbd>Ctrl+Alt+R</kbd></td><td>Run Highlighted Command in Shell</td></tr>
+          <tr><td><kbd>Ctrl+Alt+T</kbd></td><td>Send Highlighted Text to Active Terminal</td></tr>
+          <tr><td><kbd>Ctrl+Alt+S</kbd></td><td>Send <code>@file:line</code> Editor Selection to Active Agent</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <span>Agent Cockpit · Built for VS Code &amp; Antigravity IDE</span>
+    <div style="display:flex;gap:16px;">
+      <a href="https://github.com/vijaykarthick4588/agent-cockpit" target="_blank">GitHub</a>
+      <a href="https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+" target="_blank">Report a Bug</a>
+      <a href="https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+" target="_blank">Feature Request / Feedback</a>
+    </div>
+  </footer>
+
+  <script>
+    const sessions = [
+      {
+        id: "s1",
+        title: "Auth Refactor",
+        project: "Pinned",
+        cli: "agy",
+        color: "#ec4899",
+        status: "live",
+        timeline: [
+          { q: "#1 Audit OAuth token refresh flow", r: "Found race condition in refreshToken() when 2 requests expire simultaneously." },
+          { q: "#2 Add mutex lock & unit tests", r: "Implemented single-flight promise lock and added 4 passing unit tests." }
+        ],
+        log: "> Audit OAuth token refresh flow\n\nFound a race condition in refreshToken() when parallel requests expire together.\n\n> Add mutex lock & unit tests\n\nImplemented single-flight refresh lock in auth.ts.\n✓ 4/4 tests passing."
+      },
+      {
+        id: "s2",
+        title: "API Rate Limiter",
+        project: "agent-cockpit",
+        cli: "claude",
+        color: "#10b981",
+        status: "idle",
+        timeline: [
+          { q: "#1 Add sliding window rate limiter", r: "Created middleware/rateLimit.ts with Redis-backed sliding window." }
+        ],
+        log: "> Add sliding window rate limiter\n\nCreated middleware/rateLimit.ts (100 req/min per API key).\nReady for your review."
+      },
+      {
+        id: "s3",
+        title: "Release Packaging",
+        project: "agent-cockpit",
+        cli: "ps1",
+        color: "#3b82f6",
+        status: "paused",
+        timeline: [
+          { q: "#1 Build & package v0.1.1 VSIX", r: "Compiled TypeScript and packaged agent-cockpit-vscode-0.1.1.vsix." }
+        ],
+        log: "Paused session — click ▶ Resume on hover to reopen terminal in D:\\Thulir Inc."
+      }
+    ];
+
+    let activeId = "s1";
+    const sessEl = document.getElementById("demo-sessions");
+    const tlEl = document.getElementById("demo-timeline");
+    const tlCount = document.getElementById("tl-count");
+    const termTitle = document.getElementById("term-title");
+    const termBody = document.getElementById("term-body");
+
+    function render() {
+      sessEl.innerHTML = "";
+      let lastProj = "Pinned";
+      sessions.forEach((s) => {
+        if (s.project !== lastProj) {
+          lastProj = s.project;
+          const hdr = document.createElement("div");
+          hdr.className = "sec-hdr";
+          hdr.innerHTML = "<span>" + s.project + "</span><span>" + sessions.filter(x => x.project === s.project).length + "</span>";
+          sessEl.appendChild(hdr);
+        }
+        const row = document.createElement("div");
+        row.className = "sess-row" + (s.id === activeId ? " active" : "");
+        row.innerHTML =
+          '<span class="dot dot-' + s.status + '"></span>' +
+          '<span class="sess-name">' + s.title + '</span>' +
+          '<span class="cli-pill"><span class="dot" style="background:' + s.color + ';"></span>' + s.cli + '</span>';
+        row.addEventListener("click", () => { activeId = s.id; render(); });
+        sessEl.appendChild(row);
+      });
+
+      const cur = sessions.find(s => s.id === activeId) || sessions[0];
+      termTitle.textContent = cur.title + " · " + cur.cli;
+      termBody.textContent = cur.log;
+
+      tlEl.innerHTML = "";
+      tlCount.textContent = String(cur.timeline.length);
+      cur.timeline.forEach((t) => {
+        const wrap = document.createElement("div");
+        const q = document.createElement("div");
+        q.className = "tl-item";
+        q.textContent = "▸ " + t.q;
+        const r = document.createElement("div");
+        r.className = "tl-reply";
+        r.style.display = "none";
+        r.textContent = "AI: " + t.r;
+        q.addEventListener("click", () => {
+          const open = r.style.display !== "none";
+          r.style.display = open ? "none" : "block";
+          q.textContent = (open ? "▸ " : "▾ ") + t.q;
+        });
+        wrap.appendChild(q);
+        wrap.appendChild(r);
+        tlEl.appendChild(wrap);
+      });
+    }
+
+    document.getElementById("theme-btn").addEventListener("click", () => {
+      document.body.classList.toggle("light");
+    });
+
+    document.getElementById("demo-cli").addEventListener("change", (e) => {
+      const label = e.target.options[e.target.selectedIndex].text.split(" ")[0];
+      document.getElementById("demo-launch").textContent = "+ New " + label;
+    });
+
+    document.getElementById("demo-launch").addEventListener("click", () => {
+      const cli = document.getElementById("demo-cli").value;
+      const id = "s" + (sessions.length + 1);
+      sessions.push({
+        id,
+        title: "New " + cli.toUpperCase() + " Session",
+        project: "agent-cockpit",
+        cli,
+        color: "#3b82f6",
+        status: "live",
+        timeline: [{ q: "#1 Started interactive session", r: "Ready for prompts." }],
+        log: "> Launched " + cli + " in D:\\Thulir Inc\nReady for your prompt…"
+      });
+      activeId = id;
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
