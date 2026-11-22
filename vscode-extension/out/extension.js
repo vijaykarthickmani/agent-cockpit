@@ -1515,18 +1515,34 @@ class AgentCockpitProvider {
             }));
         }
     }
+    _playOsFallbackChime() {
+        if (!this._soundEnabled)
+            return;
+        if (process.platform === "win32") {
+            (0, child_process_1.execFile)("powershell.exe", [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[System.Media.SystemSounds]::Asterisk.Play()",
+            ], { timeout: 3000 }, () => { });
+        }
+    }
     /**
-     * Plays an audio notification chime when an AI agent finishes a response or requests approval.
+     * Plays a single audio notification chime when an AI agent finishes a response or requests approval.
      */
     _triggerNotificationSound(kind, sessionTitle) {
         if (!this._soundEnabled)
             return;
-        if (this._view) {
+        if (this._view && this._view.visible) {
             void this._view.webview.postMessage({
                 type: "playChime",
                 kind,
                 sessionTitle,
             });
+        }
+        else {
+            // Sidebar hidden/collapsed — play single OS fallback chime directly
+            this._playOsFallbackChime();
         }
     }
     async _toggleTopEditorTabBar() {
@@ -1544,6 +1560,7 @@ class AgentCockpitProvider {
         await this.refreshWebviewState();
     }
     _syncCliStoredSessionNames() {
+        this._syncLiveness();
         let changed = false;
         const applyDiscovered = (match, disc) => {
             match.cliSessionName = disc.title;
@@ -1613,7 +1630,8 @@ class AgentCockpitProvider {
                 if (match) {
                     match.cliSessionId = disc.cliSessionId;
                     match.lastUserTurnId = disc.lastUserTurnId;
-                    if (disc.isTurnComplete) {
+                    // Only suppress chime if this transcript turn predates opening the session
+                    if (disc.isTurnComplete && disc.mtimeMs < match.createdAt) {
                         match.lastNotifiedUserTurnId = disc.lastUserTurnId;
                     }
                     changed = true;
@@ -1914,6 +1932,9 @@ class AgentCockpitProvider {
                         this._triggerNotificationSound("complete", "Sound Enabled");
                     }
                     await this.refreshWebviewState();
+                    break;
+                case "chimeFallback":
+                    this._playOsFallbackChime();
                     break;
                 case "selectCliPreset":
                     if (typeof msg.presetId === "string" && msg.presetId) {
@@ -3517,14 +3538,33 @@ class AgentCockpitProvider {
     };
 
     let audioCtx = null;
-    function playWebAudioChime(kind) {
+    function unlockAudio() {
       try {
         if (!audioCtx) {
           const AudioContextClass = window.AudioContext || window.webkitAudioContext;
           audioCtx = new AudioContextClass();
         }
         if (audioCtx.state === "suspended") {
-          audioCtx.resume();
+          audioCtx.resume().catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    }
+    window.addEventListener("pointerdown", unlockAudio, { passive: true });
+
+    async function playWebAudioChime(kind) {
+      try {
+        if (!audioCtx) {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          audioCtx = new AudioContextClass();
+        }
+        if (audioCtx.state === "suspended") {
+          await audioCtx.resume();
+        }
+        if (audioCtx.state !== "running") {
+          vscode.postMessage({ type: "chimeFallback", kind });
+          return;
         }
         const now = audioCtx.currentTime;
         const notes = kind === "approval" ? [659.25, 880.0] : [523.25, 783.99];
@@ -3534,15 +3574,15 @@ class AgentCockpitProvider {
           osc.type = "sine";
           osc.frequency.setValueAtTime(freq, now + idx * 0.11);
           gain.gain.setValueAtTime(0.001, now + idx * 0.11);
-          gain.gain.exponentialRampToValueAtTime(0.18, now + idx * 0.11 + 0.02);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.11 + 0.35);
+          gain.gain.exponentialRampToValueAtTime(0.22, now + idx * 0.11 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.11 + 0.38);
           osc.connect(gain);
           gain.connect(audioCtx.destination);
           osc.start(now + idx * 0.11);
-          osc.stop(now + idx * 0.11 + 0.36);
+          osc.stop(now + idx * 0.11 + 0.4);
         });
       } catch {
-        // ignore
+        vscode.postMessage({ type: "chimeFallback", kind });
       }
     }
 
