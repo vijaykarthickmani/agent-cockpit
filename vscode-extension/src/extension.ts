@@ -3230,88 +3230,85 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
-    /* Auto-adapt to VS Code theme: Light if Light Theme, Dark if Dark Theme */
-    :root,
-    body.vscode-dark,
-    body.vscode-high-contrast {
-      --bg-shell: var(--vscode-sideBar-background, #0f141c);
-      --md-surface: #171f2c;
-      --md-surface-hover: #1e293b;
-      --md-fg: var(--vscode-foreground, #e2e8f0);
-      --md-muted: var(--vscode-descriptionForeground, #94a3b8);
-      --md-border: #2a3649;
-      --md-border-strong: #475569;
-      --md-primary: #3b82f6;
-      --md-primary-bg: rgba(59, 130, 246, 0.16);
-      --md-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
-      --md-shadow-md: 0 4px 10px rgba(0, 0, 0, 0.45);
-      --md-radius: 8px;
+    :root {
+      --bg: var(--vscode-sideBar-background);
+      --fg: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+      --muted: var(--vscode-descriptionForeground);
+      --border: var(--vscode-panel-border, rgba(128, 128, 128, 0.22));
+      --hover: var(--vscode-list-hoverBackground);
+      --active-bg: var(--vscode-list-inactiveSelectionBackground, rgba(128, 128, 128, 0.16));
+      --accent: var(--vscode-focusBorder, var(--vscode-button-background, #007acc));
+      --btn-bg: var(--vscode-button-background);
+      --btn-fg: var(--vscode-button-foreground);
+      --btn-hover: var(--vscode-button-hoverBackground);
+      --btn-sec-bg: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.16));
+      --btn-sec-fg: var(--vscode-button-secondaryForeground, var(--fg));
+      --input-bg: var(--vscode-input-background);
+      --input-fg: var(--vscode-input-foreground, var(--fg));
+      --input-border: var(--vscode-input-border, var(--border));
+      --dropdown-bg: var(--vscode-dropdown-background, var(--input-bg));
+      --dropdown-fg: var(--vscode-dropdown-foreground, var(--fg));
+      --dropdown-border: var(--vscode-dropdown-border, var(--border));
       --st-working: #22c55e;
       --st-needs-input: #f59e0b;
       --st-idle: #38bdf8;
-      --st-stopped: #64748b;
-    }
-
-    body.vscode-light,
-    body.vscode-high-contrast-light {
-      --bg-shell: var(--vscode-sideBar-background, #f3f4f6);
-      --md-surface: #ffffff;
-      --md-surface-hover: #f8fafc;
-      --md-fg: var(--vscode-foreground, #0f172a);
-      --md-muted: var(--vscode-descriptionForeground, #64748b);
-      --md-border: #cbd5e1;
-      --md-border-strong: #94a3b8;
-      --md-primary: #2563eb;
-      --md-primary-bg: rgba(37, 99, 235, 0.1);
-      --md-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.05);
-      --md-shadow-md: 0 3px 6px rgba(15, 23, 42, 0.12), 0 2px 4px rgba(15, 23, 42, 0.07);
-      --st-working: #16a34a;
-      --st-needs-input: #d97706;
-      --st-idle: #0284c7;
-      --st-stopped: #94a3b8;
+      --st-stopped: var(--muted);
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: "Segoe UI", Roboto, -apple-system, sans-serif;
+      font-family: var(--vscode-font-family, "Segoe UI", -apple-system, sans-serif);
       font-size: 12px;
-      color: var(--md-fg);
-      background: var(--bg-shell);
-      padding: 10px;
+      color: var(--fg);
+      background: var(--bg);
+      padding: 8px 8px 6px 8px;
       height: 100vh;
       display: flex;
       flex-direction: column;
-      gap: 9px;
+      gap: 6px;
       user-select: none;
     }
 
-    /* Material Top Bar */
+    svg.ic {
+      width: 13px;
+      height: 13px;
+      flex-shrink: 0;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    svg.ic-sm {
+      width: 11px;
+      height: 11px;
+      flex-shrink: 0;
+    }
+
+    /* Compact Native Top Bar */
     .top-bar {
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
+      min-height: 24px;
     }
     .cwd-btn {
       flex: 1;
+      min-width: 0;
       display: flex;
       align-items: center;
       gap: 6px;
-      background: var(--md-surface);
-      border: 1px solid var(--md-border);
-      border-radius: var(--md-radius);
-      box-shadow: var(--md-shadow-sm);
-      padding: 6px 9px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 3px 6px;
       cursor: pointer;
-      overflow: hidden;
+      color: var(--fg);
       font-size: 11.5px;
-      color: var(--md-fg);
-      transition: all 0.14s ease;
+      transition: background 0.1s;
     }
     .cwd-btn:hover {
-      border-color: var(--md-primary);
-      background: var(--md-surface-hover);
-      box-shadow: var(--md-shadow-md);
-      transform: translateY(-1px);
+      background: var(--hover);
+    }
+    .cwd-btn svg {
+      color: var(--muted);
     }
     .cwd-name {
       font-weight: 600;
@@ -3320,629 +3317,489 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       text-overflow: ellipsis;
     }
     .branch-chip {
+      font-family: var(--vscode-editor-font-family, Consolas, monospace);
       font-size: 10px;
-      font-weight: 600;
-      color: var(--md-primary);
-      background: var(--md-primary-bg);
-      padding: 1px 6px;
-      border-radius: 99px;
+      color: var(--muted);
+      background: rgba(128, 128, 128, 0.14);
+      padding: 1px 5px;
+      border-radius: 3px;
       margin-left: auto;
       white-space: nowrap;
     }
 
-    .chip-btn {
-      background: var(--md-surface);
-      border: 1px solid var(--md-border);
-      box-shadow: var(--md-shadow-sm);
-      color: var(--md-muted);
-      border-radius: var(--md-radius);
-      padding: 6px 7px;
-      font-size: 10.5px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.14s ease;
-    }
-    .chip-btn:hover {
-      border-color: var(--md-border-strong);
-      color: var(--md-fg);
-      background: var(--md-surface-hover);
-      transform: translateY(-1px);
-    }
-    .chip-btn.active {
-      color: var(--md-primary);
-      border-color: var(--md-primary);
-      background: var(--md-primary-bg);
-    }
-
-    /* Material Split Launch Bar: 1-Click Last Used CLI + Installed CLI Dropdown */
-    .launch-bar {
-      display: flex;
-      align-items: stretch;
-      gap: 6px;
-    }
-    .launch-primary-btn {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 7px;
-      background: var(--md-primary);
-      color: #ffffff;
-      border: 1px solid var(--md-primary);
-      border-radius: var(--md-radius);
-      box-shadow: var(--md-shadow-sm);
-      padding: 8px 10px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.14s ease;
-    }
-    .launch-primary-btn:hover {
-      background: #2563eb;
-      box-shadow: var(--md-shadow-md);
-      transform: translateY(-1px);
-    }
-    .launch-primary-btn:active {
-      transform: translateY(0);
-    }
-    .cli-select {
-      width: 128px;
-      background: var(--md-surface);
-      color: var(--md-fg);
-      border: 1px solid var(--md-border);
-      border-radius: var(--md-radius);
-      box-shadow: var(--md-shadow-sm);
-      padding: 6px 8px;
-      font-size: 11.5px;
-      font-weight: 600;
-      cursor: pointer;
-      outline: none;
-      transition: border-color 0.14s, box-shadow 0.14s;
-    }
-    .cli-select:hover, .cli-select:focus {
-      border-color: var(--md-primary);
-      box-shadow: var(--md-shadow-md);
-    }
-    .agent-dot {
-      width: 17px;
-      height: 17px;
-      border-radius: 5px;
+    .tool-btn {
+      height: 22px;
+      min-width: 24px;
+      padding: 0 6px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: 9.5px;
-      font-weight: 700;
-      color: #ffffff;
-      flex-shrink: 0;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      cursor: pointer;
+      transition: background 0.1s, color 0.1s, border-color 0.1s;
+    }
+    .tool-btn:hover {
+      background: var(--hover);
+      color: var(--fg);
+    }
+    .tool-btn.active {
+      background: var(--active-bg);
+      color: var(--fg);
+      border-color: var(--border);
     }
 
-    /* Custom Command Card */
+    /* Unified Compact Split Launch Bar */
+    .launch-bar {
+      display: flex;
+      align-items: stretch;
+      gap: 4px;
+    }
+    .launch-primary-btn {
+      flex: 1;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      background: var(--btn-bg);
+      color: var(--btn-fg);
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 0 10px;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .launch-primary-btn:hover {
+      background: var(--btn-hover);
+    }
+    .cli-select {
+      width: 118px;
+      height: 26px;
+      background: var(--dropdown-bg);
+      color: var(--dropdown-fg);
+      border: 1px solid var(--dropdown-border);
+      border-radius: 4px;
+      padding: 0 6px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      outline: none;
+    }
+    .cli-select:focus {
+      border-color: var(--accent);
+    }
+
+    /* Custom Command Inline Input */
     .custom-drawer {
       display: none;
-      gap: 5px;
-      background: var(--md-surface);
-      border: 1px solid var(--md-border);
-      border-radius: var(--md-radius);
-      box-shadow: var(--md-shadow-sm);
-      padding: 7px;
+      gap: 4px;
+      padding: 4px 0;
     }
     .custom-drawer.open { display: flex; }
 
-    input[type="text"], textarea {
+    input[type="text"] {
       width: 100%;
-      background: var(--md-surface);
-      color: var(--md-fg);
-      border: 1px solid var(--md-border);
-      border-radius: 6px;
-      padding: 6px 8px;
+      height: 24px;
+      background: var(--input-bg);
+      color: var(--input-fg);
+      border: 1px solid var(--input-border);
+      border-radius: 4px;
+      padding: 0 7px;
       font-size: 11.5px;
       font-family: inherit;
-      transition: border-color 0.14s, box-shadow 0.14s;
     }
-    input[type="text"]:focus, textarea:focus {
+    input[type="text"]:focus {
       outline: none;
-      border-color: var(--md-primary);
-      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.22);
+      border-color: var(--accent);
     }
 
-    /* Material Session Cards */
+    .send-btn {
+      height: 24px;
+      background: var(--btn-bg);
+      color: var(--btn-fg);
+      border: none;
+      border-radius: 4px;
+      padding: 0 10px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .send-btn:hover {
+      background: var(--btn-hover);
+    }
+
+    /* Flat Linear / VS Code Native Session List */
     .sessions-container {
       flex: 1;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      padding: 2px 1px;
+      gap: 1px;
+      padding-right: 2px;
     }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.55px;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 8px 6px 3px 6px;
+      user-select: none;
+    }
+    .section-header:first-child {
+      padding-top: 2px;
+    }
+    .section-header-left {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .section-header-left span {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .section-count {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--muted);
+      opacity: 0.8;
+    }
+    .section-divider {
+      height: 1px;
+      background: var(--border);
+      margin: 5px 4px 2px 4px;
+      opacity: 0.7;
+    }
+
     .session-card {
       position: relative;
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      padding: 8px 9px;
-      background: var(--md-surface);
-      border: 1px solid var(--md-border);
-      border-radius: var(--md-radius);
-      box-shadow: var(--md-shadow-sm);
+      border-radius: 4px;
+      border-left: 2px solid transparent;
       cursor: pointer;
-      transition: all 0.14s ease;
+      transition: background 0.08s;
     }
     .session-card-main {
       display: flex;
       align-items: center;
       gap: 7px;
+      height: 28px;
+      padding: 0 6px;
       width: 100%;
     }
     .session-card:hover {
-      border-color: var(--md-border-strong);
-      background: var(--md-surface-hover);
-      box-shadow: var(--md-shadow-md);
-      transform: translateY(-1px);
+      background: var(--hover);
     }
     .session-card.active {
-      border-color: var(--md-primary);
-      background: var(--md-primary-bg);
+      background: var(--active-bg);
+      border-left-color: var(--accent);
     }
-    .pin-marker {
-      font-size: 10px;
-      color: #f59e0b;
-      flex-shrink: 0;
-    }
-    .section-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 9.5px;
-      font-weight: 700;
-      letter-spacing: 0.65px;
-      text-transform: uppercase;
-      color: var(--md-muted);
-      padding: 4px 3px 2px 3px;
-      user-select: none;
-    }
-    .section-divider {
-      height: 1px;
-      background: var(--md-border);
-      margin: 4px 2px;
-    }
-    .pinned-group {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 6px;
-      border-radius: 10px;
-      background: rgba(245, 158, 11, 0.06);
-      border: 1px solid rgba(245, 158, 11, 0.22);
-    }
-    .cli-tag {
-      font-family: var(--vscode-editor-font-family, Consolas, monospace);
-      font-size: 9.5px;
-      font-weight: 600;
-      letter-spacing: 0.2px;
-      padding: 1px 6px;
-      border-radius: 999px;
-      border: 1px solid var(--md-border-strong);
-      background: var(--bg-shell);
-      color: var(--md-fg);
-      flex-shrink: 0;
-      cursor: pointer;
-      line-height: 15px;
-      transition: opacity 0.12s, transform 0.12s;
-    }
-    .cli-tag:hover {
-      opacity: 0.85;
-      transform: scale(1.03);
-    }
-    .color-palette-row {
-      display: none;
-      align-items: center;
-      gap: 6px;
-      padding-top: 4px;
-      border-top: 1px dashed var(--md-border);
-    }
-    .color-palette-row.open {
-      display: flex;
-    }
-    .color-swatch {
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      border: 2px solid rgba(255, 255, 255, 0.7);
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-      cursor: pointer;
-      transition: transform 0.12s;
-    }
-    .color-swatch:hover {
-      transform: scale(1.22);
-    }
-    .snippet-card {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      padding: 6px 7px;
-      border-radius: 6px;
-      border: 1px solid var(--md-border);
-      background: var(--bg-shell);
-    }
-    .snippet-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 4px;
-    }
-    .snippet-code {
-      font-family: var(--vscode-editor-font-family, monospace);
-      font-size: 10.5px;
-      white-space: pre-wrap;
-      word-break: break-all;
-      max-height: 64px;
-      overflow-y: auto;
-      padding: 4px 6px;
-      border-radius: 4px;
-      background: var(--md-surface);
-      border: 1px solid var(--md-border);
-      color: var(--md-fg);
-    }
-    .snippet-actions {
-      display: flex;
-      gap: 4px;
-    }
-    .snip-btn {
-      flex: 1;
-      padding: 3px 5px;
-      font-size: 10px;
-      font-weight: 600;
-      border-radius: 4px;
-      border: 1px solid var(--md-border);
-      background: var(--md-surface);
-      color: var(--md-fg);
-      cursor: pointer;
-      text-align: center;
-    }
-    .snip-btn:hover {
-      border-color: var(--md-primary);
-      color: var(--md-primary);
-    }
-    .snip-btn.run {
-      background: var(--md-primary);
-      border-color: var(--md-primary);
-      color: #ffffff;
+    .session-card.stopped .s-title {
+      opacity: 0.72;
     }
 
     .status-led {
-      width: 8px;
-      height: 8px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
       flex-shrink: 0;
     }
     .led-working {
       background: var(--st-working);
-      box-shadow: 0 0 8px var(--st-working);
+      box-shadow: 0 0 6px var(--st-working);
       animation: pulse 1.3s infinite ease-in-out;
     }
     .led-needs-input {
       background: var(--st-needs-input);
-      box-shadow: 0 0 8px var(--st-needs-input);
+      box-shadow: 0 0 6px var(--st-needs-input);
       animation: pulse 1.1s infinite ease-in-out;
     }
     .led-idle {
       background: var(--st-idle);
+      opacity: 0.85;
     }
     .led-stopped {
       background: var(--st-stopped);
+      opacity: 0.45;
     }
 
     @keyframes pulse {
       0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.28); opacity: 0.65; }
+      50% { transform: scale(1.3); opacity: 0.6; }
     }
 
     .s-title {
       flex: 1;
-      font-weight: 600;
-      font-size: 11.8px;
+      min-width: 0;
+      font-weight: 400;
+      font-size: 12px;
+      color: var(--fg);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .session-card.active .s-title {
+      font-weight: 500;
+    }
     .s-rename-input {
       flex: 1;
-      padding: 2px 5px !important;
+      height: 20px !important;
+      padding: 0 4px !important;
       font-size: 11.5px !important;
     }
-    .shortcut-pill {
-      font-family: monospace;
+
+    .cli-meta {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: var(--vscode-editor-font-family, Consolas, monospace);
+      font-size: 10px;
+      color: var(--muted);
+      padding: 1px 4px;
+      border-radius: 3px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .cli-meta:hover {
+      background: rgba(128, 128, 128, 0.16);
+      color: var(--fg);
+    }
+    .color-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .state-badge {
       font-size: 9.5px;
       font-weight: 600;
-      color: var(--md-muted);
-      background: rgba(148, 163, 184, 0.14);
-      border: 1px solid var(--md-border);
       padding: 1px 4px;
-      border-radius: 4px;
+      border-radius: 3px;
       white-space: nowrap;
+      flex-shrink: 0;
     }
-    .state-tag {
+    .st-working { color: var(--st-working); background: rgba(34, 197, 94, 0.14); }
+    .st-needs-input { color: var(--st-needs-input); background: rgba(245, 158, 11, 0.16); }
+    .st-stopped { color: var(--muted); background: rgba(128, 128, 128, 0.14); }
+
+    .shortcut-hint {
+      font-family: var(--vscode-editor-font-family, Consolas, monospace);
       font-size: 9.5px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
-      padding: 2px 5px;
-      border-radius: 4px;
+      color: var(--muted);
+      opacity: 0.65;
       white-space: nowrap;
-    }
-    .tag-working {
-      color: var(--st-working);
-      background: rgba(34, 197, 94, 0.15);
-    }
-    .tag-needs-input {
-      color: var(--st-needs-input);
-      background: rgba(245, 158, 11, 0.18);
-    }
-    .tag-idle {
-      color: var(--md-muted);
-      background: rgba(148, 163, 184, 0.14);
-    }
-    .tag-stopped {
-      color: var(--md-primary);
-      background: var(--md-primary-bg);
-      border: 1px solid rgba(59, 130, 246, 0.35);
+      flex-shrink: 0;
     }
 
     .row-actions {
       display: none;
       align-items: center;
-      gap: 3px;
+      gap: 1px;
+      flex-shrink: 0;
     }
     .session-card:hover .row-actions {
       display: flex;
     }
-    .session-card:hover .cli-tag,
-    .session-card:hover .state-tag,
-    .session-card:hover .shortcut-pill {
+    .session-card:hover .cli-meta,
+    .session-card:hover .state-badge,
+    .session-card:hover .shortcut-hint {
       display: none;
     }
 
     .icon-action {
-      width: 21px;
-      height: 21px;
-      border-radius: 5px;
-      border: 1px solid var(--md-border);
-      background: var(--md-surface);
-      color: var(--md-muted);
+      width: 20px;
+      height: 20px;
+      border-radius: 3px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: 10.5px;
-      transition: all 0.12s;
+      transition: background 0.1s, color 0.1s;
     }
     .icon-action:hover {
-      color: var(--md-primary);
-      border-color: var(--md-primary);
-      background: var(--md-primary-bg);
+      color: var(--fg);
+      background: rgba(128, 128, 128, 0.2);
     }
     .icon-action.danger:hover {
-      color: #ef4444;
-      border-color: #ef4444;
-      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      background: rgba(239, 68, 68, 0.14);
+    }
+
+    .color-palette-row {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px 6px 20px;
+    }
+    .color-palette-row.open {
+      display: flex;
+    }
+    .color-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .color-swatch:hover {
+      transform: scale(1.25);
     }
 
     .empty-card {
       margin: auto;
-      padding: 18px 14px;
-      border: 1px dashed var(--md-border);
-      border-radius: var(--md-radius);
-      color: var(--md-muted);
+      padding: 16px 12px;
+      color: var(--muted);
       font-size: 11.5px;
       text-align: center;
     }
 
-    /* Footer Prompt & 5-Tab Material Action Bar */
+    /* Clean Native Segmented Footer */
     .footer-bar {
       display: flex;
       flex-direction: column;
-      gap: 7px;
-      padding-top: 8px;
-      border-top: 1px solid var(--md-border);
-    }
-    .prompt-box {
-      display: flex;
-      gap: 5px;
-    }
-    .send-btn {
-      background: var(--md-primary);
-      color: #ffffff;
-      border: 1px solid var(--md-primary);
-      border-radius: 6px;
-      padding: 0 10px;
-      font-size: 11.5px;
-      font-weight: 600;
-      cursor: pointer;
-      box-shadow: var(--md-shadow-sm);
-    }
-    .send-btn:hover {
-      background: #2563eb;
+      gap: 6px;
+      padding-top: 6px;
+      border-top: 1px solid var(--border);
     }
     .footer-tabs {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 4px;
-    }
-    .timeline-header {
-      font-size: 9.5px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--md-muted);
-      padding: 2px 3px 4px 3px;
-      border-bottom: 1px solid var(--md-border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .timeline-item {
-      position: relative;
-      display: flex;
-      align-items: flex-start;
-      gap: 7px;
-      padding: 5px 6px 5px 10px;
-      border-left: 2px solid var(--md-border-strong);
-      margin-left: 5px;
-      border-radius: 0 6px 6px 0;
-      cursor: pointer;
-      transition: background 0.12s, border-color 0.12s;
-    }
-    .timeline-item:hover {
-      background: var(--md-surface-hover);
-      border-left-color: var(--md-primary);
-    }
-    .timeline-dot {
-      position: absolute;
-      left: -5px;
-      top: 9px;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--md-primary);
-      border: 2px solid var(--md-surface);
-    }
-    .timeline-body {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
       gap: 2px;
     }
-    .timeline-q {
+    .footer-btn {
+      height: 24px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 3px 3px 0 0;
+      color: var(--muted);
+      padding: 0 4px;
       font-size: 11px;
       font-weight: 500;
-      color: var(--md-fg);
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-      line-height: 1.3;
-    }
-    .timeline-meta {
-      font-size: 9.5px;
-      color: var(--md-muted);
-      display: flex;
-      gap: 6px;
-    }
-    .timeline-actions {
-      display: none;
-      gap: 3px;
-      flex-shrink: 0;
-    }
-    .timeline-item:hover .timeline-actions {
-      display: flex;
-    }
-    .footer-btn {
-      background: var(--md-surface);
-      border: 1px solid var(--md-border);
-      border-radius: 6px;
-      box-shadow: var(--md-shadow-sm);
-      color: var(--md-fg);
-      padding: 5px 3px;
-      font-size: 10.2px;
-      font-weight: 600;
       cursor: pointer;
       text-align: center;
       white-space: nowrap;
-      transition: all 0.14s ease;
+      transition: color 0.1s, background 0.1s, border-color 0.1s;
     }
     .footer-btn:hover {
-      border-color: var(--md-primary);
-      background: var(--md-surface-hover);
-      transform: translateY(-1px);
+      color: var(--fg);
+      background: var(--hover);
     }
     .footer-btn.active {
-      color: var(--md-primary);
-      border-color: var(--md-primary);
-      background: var(--md-primary-bg);
+      color: var(--fg);
+      font-weight: 600;
+      border-bottom-color: var(--accent);
     }
 
     .drawer-pane {
       display: none;
       flex-direction: column;
-      gap: 5px;
-      max-height: 175px;
+      gap: 2px;
+      max-height: 185px;
       overflow-y: auto;
-      background: var(--md-surface);
-      border: 1px solid var(--md-border);
-      border-radius: var(--md-radius);
-      padding: 7px;
-      box-shadow: var(--md-shadow-sm);
+      padding: 4px 0;
     }
     .drawer-pane.open { display: flex; }
 
-    /* MCP & Skills Drawer Rows */
     .item-row {
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 11px;
-      padding: 5px 6px;
-      border-radius: 6px;
-      border: 1px solid var(--md-border);
-      background: var(--bg-shell);
+      font-size: 11.5px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      transition: background 0.08s;
+    }
+    .item-row:hover {
+      background: var(--hover);
     }
     .item-title {
-      font-weight: 600;
+      font-weight: 400;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       flex: 1;
+      min-width: 0;
     }
     .scope-pill {
+      font-family: var(--vscode-editor-font-family, Consolas, monospace);
       font-size: 9.5px;
-      font-weight: 600;
       padding: 1px 5px;
-      border-radius: 4px;
-      background: rgba(148, 163, 184, 0.15);
-      color: var(--md-muted);
+      border-radius: 3px;
+      background: rgba(128, 128, 128, 0.14);
+      color: var(--muted);
       white-space: nowrap;
+      flex-shrink: 0;
     }
     .mcp-connected { color: var(--st-working); background: rgba(34, 197, 94, 0.14); }
     .mcp-configured { color: var(--st-idle); background: rgba(56, 189, 248, 0.14); }
-    .mcp-error { color: #ef4444; background: rgba(239, 68, 68, 0.15); }
-    .git-st { color: var(--st-needs-input); font-family: monospace; font-weight: 700; font-size: 10.5px; width: 14px; }
-    .git-path {
-      flex: 1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font-family: monospace;
-      font-size: 10.5px;
+    .mcp-error { color: #f87171; background: rgba(239, 68, 68, 0.14); }
+
+    .drawer-action-btn {
+      height: 24px;
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      background: var(--btn-sec-bg);
+      color: var(--btn-sec-fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
       cursor: pointer;
+      margin-bottom: 4px;
+    }
+    .drawer-action-btn:hover {
+      background: var(--hover);
+      color: var(--fg);
     }
   </style>
 </head>
 <body>
-  <!-- Material Top Row -->
+  <!-- Compact Workspace & Mode Strip -->
   <div class="top-bar">
-    <button id="cwd-pill" class="cwd-btn" title="Click to change working directory">
-      <span>📁</span>
+    <button id="cwd-pill" class="cwd-btn" title="Change working directory">
+      <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.8l1.4 1.5h4.8A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7z"/></svg>
       <span id="cwd-name" class="cwd-name">workspace</span>
       <span id="branch-tag" class="branch-chip" style="display:none;"></span>
     </button>
-    <button id="sound-toggle" class="chip-btn active" title="Toggle AI response completion notification sound">
-      🔔
-    </button>
-    <button id="zen-tabs-toggle" class="chip-btn" title="Hide/Show redundant top Editor Tab bar (+35px terminal height)">
-      Zen
-    </button>
-    <button id="wt-toggle" class="chip-btn" title="Isolate next session in a new Git Worktree">
-      WT
-    </button>
+    <button id="sound-toggle" class="tool-btn active" title="Toggle completion notification sound"></button>
+    <button id="zen-tabs-toggle" class="tool-btn" title="Hide/Show top Editor Tab bar">Zen</button>
+    <button id="wt-toggle" class="tool-btn" title="Isolate next session in a Git Worktree">WT</button>
   </div>
 
-  <!-- Material 1-Click Launch Last Used CLI + Installed CLI Dropdown -->
+  <!-- Compact Split Launch Control -->
   <div class="launch-bar">
-    <button id="launch-last-btn" class="launch-primary-btn" title="1-click launch your last used CLI agent">
-      <span id="launch-last-label">+ Launch AGY</span>
+    <button id="launch-last-btn" class="launch-primary-btn" title="Launch last used CLI agent">
+      <svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+      <span id="launch-last-label">New Session</span>
     </button>
-    <select id="cli-dropdown" class="cli-select" title="Select from installed CLIs on this PC"></select>
+    <select id="cli-dropdown" class="cli-select" title="Select installed CLI"></select>
   </div>
 
   <div id="custom-drawer" class="custom-drawer">
@@ -3950,24 +3807,41 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     <button id="custom-go" class="send-btn">Run</button>
   </div>
 
-  <!-- Material Session Cards -->
+  <!-- Flat Grouped Conversations List (Pinned -> Grouped by Project) -->
   <div id="session-list" class="sessions-container"></div>
 
-  <!-- Material Footer -->
+  <!-- Segmented Footer -->
   <div class="footer-bar">
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
     <div id="jobs-drawer" class="drawer-pane"></div>
 
     <div class="footer-tabs">
-      <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
-      <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
-      <button id="tab-jobs" class="footer-btn" title="Manage automated scheduled CLI jobs">Jobs (<span id="jobs-count">0</span>)</button>
+      <button id="tab-mcp" class="footer-btn" title="MCP servers & status">MCP (<span id="mcp-count">0</span>)</button>
+      <button id="tab-skills" class="footer-btn" title="Available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
+      <button id="tab-jobs" class="footer-btn" title="Automated scheduled jobs">Jobs (<span id="jobs-count">0</span>)</button>
     </div>
   </div>
 
   <script>
     const vscode = acquireVsCodeApi();
+
+    const ICONS = {
+      bell: '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2a4 4 0 0 0-4 4v2.5L2.7 11h10.6L12 8.5V6a4 4 0 0 0-4-4z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg>',
+      bellOff: '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5A4 4 0 0 1 12 6v2.5l1.3 2.5H9.5"/><path d="M4 6v2.5L2.7 11h4"/><path d="M2 2l12 12"/></svg>',
+      pin: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5l4 4-2.5 2.5-.5 2.5-3.5-3.5-3.5 3.5"/><path d="M4.5 9.5L7 7l2.5-4.5"/></svg>',
+      folder: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.8l1.4 1.5h4.8A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7z"/></svg>',
+      handoff: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3l2.5 2.5L11 8"/><path d="M2.5 5.5h11"/><path d="M5 13l-2.5-2.5L5 8"/><path d="M13.5 10.5h-11"/></svg>',
+      color: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5"/></svg>',
+      edit: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.2 2.5l2.3 2.3-7.7 7.7H3.5v-2.3l7.7-7.7z"/></svg>',
+      at: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="2.6"/><path d="M10.6 8v.8a1.7 1.7 0 0 0 3.4 0V8a6 6 0 1 0-2.4 4.8"/></svg>',
+      close: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+      play: '<svg class="ic-sm" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 3l8.5 5-8.5 5V3z"/></svg>',
+      pause: '<svg class="ic-sm" viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx="0.5"/><rect x="9" y="3" width="3" height="10" rx="0.5"/></svg>',
+      plus: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>',
+      ext: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h7v7"/><path d="M13 3L6 10"/></svg>',
+      enter: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4v4a2 2 0 0 1-2 2H3.5"/><path d="M6 7.5L3.5 10 6 12.5"/></svg>'
+    };
 
     let state = {
       currentCwd: "",
@@ -3976,7 +3850,6 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       activeFooter: null,
     };
 
-    // Web Audio API harmonic chime synthesizer
     let audioCtx = null;
     function playWebAudioChime(kind) {
       try {
@@ -4003,7 +3876,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           osc.stop(now + idx * 0.11 + 0.36);
         });
       } catch {
-        // Fallback handled by host OS sound
+        // ignore
       }
     }
 
@@ -4032,6 +3905,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     const tabMcp = document.getElementById("tab-mcp");
     const tabSkills = document.getElementById("tab-skills");
     const tabJobs = document.getElementById("tab-jobs");
+
+    soundToggle.innerHTML = ICONS.bell;
 
     const COLOR_PALETTE = [
       "#3b82f6",
@@ -4064,15 +3939,12 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
     cwdPill.addEventListener("click", () => {
       vscode.postMessage({ type: "browseCwd" });
     });
-
     soundToggle.addEventListener("click", () => {
       vscode.postMessage({ type: "toggleSound" });
     });
-
     zenTabsToggle.addEventListener("click", () => {
       vscode.postMessage({ type: "toggleTopTabs" });
     });
-
     wtToggle.addEventListener("click", () => {
       state.useWorktree = !state.useWorktree;
       wtToggle.classList.toggle("active", state.useWorktree);
@@ -4177,11 +4049,11 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       input.select();
     }
 
-    function statusLabelFor(status, folderName) {
-      if (status === "working") return { cls: "tag-working", text: "Streaming" };
-      if (status === "needs-input") return { cls: "tag-needs-input", text: "Approval?" };
-      if (status === "stopped") return { cls: "tag-stopped", text: "↻ Resume" };
-      return { cls: "tag-idle", text: folderName };
+    function stateBadgeHtml(status) {
+      if (status === "working") return '<span class="state-badge st-working">Live</span>';
+      if (status === "needs-input") return '<span class="state-badge st-needs-input">Input</span>';
+      if (status === "stopped") return '<span class="state-badge st-stopped">Resume</span>';
+      return "";
     }
 
     window.addEventListener("message", (event) => {
@@ -4204,7 +4076,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         branchTag.style.display = "none";
       }
 
-      soundToggle.textContent = msg.soundEnabled ? "🔔" : "🔕";
+      soundToggle.innerHTML = msg.soundEnabled ? ICONS.bell : ICONS.bellOff;
       soundToggle.classList.toggle("active", Boolean(msg.soundEnabled));
       zenTabsToggle.classList.toggle("active", Boolean(msg.topTabsHidden));
 
@@ -4216,9 +4088,9 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         state.presets[0];
 
       if (selectedPreset) {
-        launchLastLabel.textContent = "+ Launch " + selectedPreset.label.split(" ")[0];
+        launchLastLabel.textContent = "New " + selectedPreset.label.split(" ")[0];
         launchLastBtn.title =
-          "1-Click Launch " + selectedPreset.label + " (" + selectedPreset.command + ")";
+          "Launch " + selectedPreset.label + " (" + selectedPreset.command + ")";
       }
 
       cliDropdown.innerHTML = "";
@@ -4231,29 +4103,31 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       });
       const customOpt = document.createElement("option");
       customOpt.value = "__custom__";
-      customOpt.textContent = "+ Custom CLI…";
+      customOpt.textContent = "Custom CLI…";
       cliDropdown.appendChild(customOpt);
 
-      // Material Session Cards (Pinned Section Separated at Top + Clean CLI Monospace Tag)
+      // Flat Native Rows: Pinned at top, then Conversations grouped & sorted by Project/Folder
       sessionList.innerHTML = "";
       if (!msg.sessions || msg.sessions.length === 0) {
-        sessionList.innerHTML = '<div class="empty-card">Click Launch above to start an agent session</div>';
+        sessionList.innerHTML = '<div class="empty-card">Launch a CLI agent above to start a session</div>';
       } else {
-        const renderSessionCard = (s) => {
+        const renderSessionRow = (s) => {
           const isStopped = s.status === "stopped";
           const cardColor = s.color || "#3b82f6";
           const cliTagLabel = s.cliName || "cli";
-          const tagInfo = statusLabelFor(s.status, s.folderName);
-          const shortcutBadge = s.index <= 5 ? '<span class="shortcut-pill">⌃' + s.index + '</span>' : '';
+          const shortcutHtml = s.index <= 5 ? '<span class="shortcut-hint">⌃' + s.index + '</span>' : "";
           const card = document.createElement("div");
           card.className =
             "session-card" +
             (s.id === msg.activeSessionId ? " active" : "") +
             (isStopped ? " stopped" : "");
-          card.style.borderLeft = "4px solid " + cardColor;
-          card.title = isStopped
-            ? "Paused (" + cliTagLabel + ") — Click to resume conversation (" + s.folderName + ")"
-            : "CLI: " + cliTagLabel + " · Status: " + s.status + " · Folder: " + s.cwd + " · Double-click title to rename";
+          card.title =
+            s.title +
+            " (" +
+            cliTagLabel +
+            ") · " +
+            s.cwd +
+            (isStopped ? " · Click to resume" : " · Double-click title to rename");
 
           const swatchesHtml = COLOR_PALETTE.map(
             (c) =>
@@ -4267,23 +4141,28 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           card.innerHTML =
             '<div class="session-card-main">' +
               '<span class="status-led led-' + s.status + '"></span>' +
-              '<span class="s-title">' + s.title + '</span>' +
-              '<span class="cli-tag act-color" title="CLI: ' + cliTagLabel + ' (Click to change color)" style="border-color:' + cardColor + ';color:' + cardColor + ';">' + cliTagLabel + '</span>' +
-              '<span class="state-tag ' + tagInfo.cls + '">' + tagInfo.text + '</span>' +
-              shortcutBadge +
+              '<span class="s-title"></span>' +
+              '<span class="cli-meta act-color" title="CLI: ' + cliTagLabel + ' (Click to change color)">' +
+                '<span class="color-dot" style="background:' + cardColor + ';"></span>' +
+                '<span>' + cliTagLabel + '</span>' +
+              '</span>' +
+              stateBadgeHtml(s.status) +
+              shortcutHtml +
               '<div class="row-actions">' +
-                '<button class="icon-action act-handoff" title="1-Click Handoff: Generate notes from this chat & send to another session">⇄</button>' +
-                '<button class="icon-action act-pin" title="' + (s.pinned ? "Unpin session" : "Pin/Bookmark session") + '">📌</button>' +
-                '<button class="icon-action act-palette" title="Color code session">🎨</button>' +
-                '<button class="icon-action act-rename" title="Rename">✎</button>' +
-                '<button class="icon-action act-send" title="Send @file:line">@</button>' +
-                '<button class="icon-action danger act-delete" title="Remove session">✕</button>' +
+                '<button class="icon-action act-handoff" title="1-Click Handoff to another chat">' + ICONS.handoff + '</button>' +
+                '<button class="icon-action act-pin" title="' + (s.pinned ? "Unpin" : "Pin") + '">' + ICONS.pin + '</button>' +
+                '<button class="icon-action act-palette" title="Color">' + ICONS.color + '</button>' +
+                '<button class="icon-action act-rename" title="Rename">' + ICONS.edit + '</button>' +
+                '<button class="icon-action act-send" title="Send @file:line">' + ICONS.at + '</button>' +
+                '<button class="icon-action danger act-delete" title="Close & remove">' + ICONS.close + '</button>' +
               '</div>' +
             '</div>' +
             '<div class="color-palette-row">' +
-              '<span style="font-size:10px;color:var(--md-muted);">Color:</span>' +
+              '<span style="font-size:10px;color:var(--muted);">Color:</span>' +
               swatchesHtml +
             '</div>';
+
+          card.querySelector(".s-title").textContent = s.title;
 
           card.addEventListener("click", () => {
             vscode.postMessage({
@@ -4345,35 +4224,59 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         if (pinnedSessions.length > 0) {
           const pinHeader = document.createElement("div");
           pinHeader.className = "section-header";
-          pinHeader.innerHTML = '<span>📌 Pinned</span><span>' + pinnedSessions.length + '</span>';
+          pinHeader.innerHTML =
+            '<span class="section-header-left">' + ICONS.pin + '<span>Pinned</span></span>' +
+            '<span class="section-count">' + pinnedSessions.length + '</span>';
           sessionList.appendChild(pinHeader);
 
-          const pinGroup = document.createElement("div");
-          pinGroup.className = "pinned-group";
-          pinnedSessions.forEach((s) => pinGroup.appendChild(renderSessionCard(s)));
-          sessionList.appendChild(pinGroup);
+          pinnedSessions.forEach((s) => sessionList.appendChild(renderSessionRow(s)));
 
           if (regularSessions.length > 0) {
             const divider = document.createElement("div");
             divider.className = "section-divider";
             sessionList.appendChild(divider);
-
-            const regHeader = document.createElement("div");
-            regHeader.className = "section-header";
-            regHeader.innerHTML = '<span>Conversations</span><span>' + regularSessions.length + '</span>';
-            sessionList.appendChild(regHeader);
           }
         }
 
-        regularSessions.forEach((s) => sessionList.appendChild(renderSessionCard(s)));
+        // Group & sort unpinned conversations by Project / Folder Name (current workspace first, then A-Z)
+        if (regularSessions.length > 0) {
+          const currentFolderLower = (msg.folderName || "").toLowerCase();
+          const byProject = new Map();
+          regularSessions.forEach((s) => {
+            const proj = s.folderName || "Workspace";
+            if (!byProject.has(proj)) byProject.set(proj, []);
+            byProject.get(proj).push(s);
+          });
+
+          const sortedProjects = Array.from(byProject.keys()).sort((a, b) => {
+            const aCur = a.toLowerCase() === currentFolderLower;
+            const bCur = b.toLowerCase() === currentFolderLower;
+            if (aCur && !bCur) return -1;
+            if (!aCur && bCur) return 1;
+            return a.localeCompare(b);
+          });
+
+          sortedProjects.forEach((projName) => {
+            const groupItems = byProject.get(projName);
+            const hdr = document.createElement("div");
+            hdr.className = "section-header";
+            hdr.innerHTML =
+              '<span class="section-header-left">' + ICONS.folder + '<span></span></span>' +
+              '<span class="section-count">' + groupItems.length + '</span>';
+            hdr.querySelector(".section-header-left span").textContent = projName;
+            sessionList.appendChild(hdr);
+
+            groupItems.forEach((s) => sessionList.appendChild(renderSessionRow(s)));
+          });
+        }
       }
 
-      // Render MCP Servers & Status
+      // Render MCP Servers
       const mcps = msg.mcpServers || [];
       mcpCount.textContent = String(mcps.length);
       mcpDrawer.innerHTML = "";
       if (mcps.length === 0) {
-        mcpDrawer.innerHTML = '<div style="color:var(--md-muted);text-align:center;padding:6px 0;">No MCP servers detected</div>';
+        mcpDrawer.innerHTML = '<div style="color:var(--muted);text-align:center;padding:8px 0;font-size:11px;">No MCP servers detected</div>';
       } else {
         mcps.forEach((m) => {
           const r = document.createElement("div");
@@ -4384,8 +4287,9 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           const pillText = m.status === "connected" ? (m.toolCount + " tools") : m.status;
           r.innerHTML =
             '<span class="status-led ' + ledCls + '"></span>' +
-            '<span class="item-title">' + m.name + '</span>' +
+            '<span class="item-title"></span>' +
             '<span class="scope-pill ' + pillCls + '">' + pillText + '</span>';
+          r.querySelector(".item-title").textContent = m.name;
           mcpDrawer.appendChild(r);
         });
       }
@@ -4395,17 +4299,18 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       skillsCount.textContent = String(skills.length);
       skillsDrawer.innerHTML = "";
       if (skills.length === 0) {
-        skillsDrawer.innerHTML = '<div style="color:var(--md-muted);text-align:center;padding:6px 0;">No skills detected</div>';
+        skillsDrawer.innerHTML = '<div style="color:var(--muted);text-align:center;padding:8px 0;font-size:11px;">No skills detected</div>';
       } else {
         skills.forEach((sk) => {
           const r = document.createElement("div");
           r.className = "item-row";
           r.title = sk.description;
           r.innerHTML =
-            '<span class="scope-pill">' + (sk.kind === "agent" ? "🤖 Agent" : "⚡ " + sk.scope) + '</span>' +
-            '<span class="item-title">' + sk.name + '</span>' +
-            (sk.filePath ? '<button class="icon-action sk-open" title="Open SKILL.md">↗</button>' : '') +
-            '<button class="icon-action sk-use" title="Insert into active agent">↵</button>';
+            '<span class="scope-pill">' + (sk.kind === "agent" ? "agent" : sk.scope.toLowerCase()) + '</span>' +
+            '<span class="item-title"></span>' +
+            (sk.filePath ? '<button class="icon-action sk-open" title="Open SKILL.md">' + ICONS.ext + '</button>' : '') +
+            '<button class="icon-action sk-use" title="Insert into active agent">' + ICONS.enter + '</button>';
+          r.querySelector(".item-title").textContent = sk.name;
           const openBtn = r.querySelector(".sk-open");
           if (openBtn) {
             openBtn.addEventListener("click", () => {
@@ -4425,10 +4330,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       jobsDrawer.innerHTML = "";
 
       const addJobBtn = document.createElement("button");
-      addJobBtn.className = "send-btn";
-      addJobBtn.style.padding = "5px 8px";
-      addJobBtn.style.width = "100%";
-      addJobBtn.textContent = "+ New Scheduled Job";
+      addJobBtn.className = "drawer-action-btn";
+      addJobBtn.innerHTML = ICONS.plus + '<span>New Scheduled Job</span>';
       addJobBtn.addEventListener("click", () => {
         vscode.postMessage({ type: "createScheduledJob" });
       });
@@ -4436,7 +4339,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
       if (jobs.length === 0) {
         const emptyEl = document.createElement("div");
-        emptyEl.style.cssText = "color:var(--md-muted);text-align:center;padding:6px 0;font-size:10.5px;";
+        emptyEl.style.cssText = "color:var(--muted);text-align:center;padding:6px 0;font-size:10.5px;";
         emptyEl.textContent = "No scheduled jobs yet — runs while IDE is open";
         jobsDrawer.appendChild(emptyEl);
       } else {
@@ -4456,11 +4359,12 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
             j.prompt;
           r.innerHTML =
             '<span class="status-led ' + (j.enabled ? "led-working" : "led-stopped") + '"></span>' +
-            '<span class="item-title">' + j.name + '</span>' +
+            '<span class="item-title"></span>' +
             '<span class="scope-pill">' + j.cliName + ' · ' + j.scheduleLabel + '</span>' +
-            '<button class="icon-action job-run" title="Run now">▶</button>' +
-            '<button class="icon-action job-toggle" title="' + (j.enabled ? "Pause job" : "Resume job") + '">' + (j.enabled ? "⏸" : "↻") + '</button>' +
-            '<button class="icon-action danger job-del" title="Delete job">✕</button>';
+            '<button class="icon-action job-run" title="Run now">' + ICONS.play + '</button>' +
+            '<button class="icon-action job-toggle" title="' + (j.enabled ? "Pause" : "Resume") + '">' + (j.enabled ? ICONS.pause : ICONS.play) + '</button>' +
+            '<button class="icon-action danger job-del" title="Delete">' + ICONS.close + '</button>';
+          r.querySelector(".item-title").textContent = j.name;
           r.querySelector(".job-run").addEventListener("click", () => {
             vscode.postMessage({ type: "runScheduledJobNow", id: j.id });
           });
