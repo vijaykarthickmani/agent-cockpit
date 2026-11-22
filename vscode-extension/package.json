@@ -2,7 +2,7 @@
   "name": "agent-cockpit-vscode",
   "displayName": "Agent Cockpit — Multi-Agent CLI Terminal Manager",
   "description": "Run and switch between interactive CLI coding agents (Claude Code, Codex, Gemini CLI, shells) as full-height Editor Tabs with cwd picker, isolated Git worktrees, live git status/diff, and @file:line context injection.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "ThulirLabs",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -159,6 +159,16 @@
           "group": "inline@2"
         }
       ]
+    },
+    "configuration": {
+      "title": "Agent Cockpit",
+      "properties": {
+        "agentCockpit.shellPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional shell executable path used to launch CLI agents. Leave empty to use PowerShell on Windows or VS Code's default shell on macOS/Linux."
+        }
+      }
     },
     "configurationDefaults": {
       "terminal.integrated.commandsToSkipShell": [

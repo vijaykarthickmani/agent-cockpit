@@ -57,28 +57,65 @@ const CANDIDATE_PRESETS: AgentPreset[] = [
     command: "aider",
     args: [],
   },
-  {
-    id: "powershell",
-    label: "PowerShell",
-    badge: ">_",
-    color: "#64748b",
-    command: "powershell.exe",
-    args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-  },
-  {
-    id: "cmd",
-    label: "Command Prompt",
-    badge: "CMD",
-    color: "#475569",
-    command: "cmd.exe",
-    args: [],
-  },
+  ...(process.platform === "win32"
+    ? [
+        {
+          id: "powershell",
+          label: "PowerShell",
+          badge: ">_",
+          color: "#64748b",
+          command: "powershell.exe",
+          args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        },
+        {
+          id: "cmd",
+          label: "Command Prompt",
+          badge: "CMD",
+          color: "#475569",
+          command: "cmd.exe",
+          args: [],
+        },
+      ]
+    : [
+        {
+          id: "shell",
+          label: "Terminal",
+          badge: ">_",
+          color: "#64748b",
+          command: "shell",
+          args: [],
+        },
+      ]),
 ];
 
 function isExecutableInstalled(command: string): boolean {
   const lower = command.toLowerCase();
-  if (lower === "powershell.exe" || lower === "powershell" || lower === "cmd.exe" || lower === "cmd") {
-    return true;
+  if (process.platform === "win32") {
+    if (
+      lower === "powershell.exe" ||
+      lower === "powershell" ||
+      lower === "cmd.exe" ||
+      lower === "cmd"
+    ) {
+      return true;
+    }
+  } else {
+    if (
+      lower === "shell" ||
+      lower === "zsh" ||
+      lower === "bash" ||
+      lower === "sh"
+    ) {
+      return true;
+    }
+    if (
+      lower === "powershell.exe" ||
+      lower === "powershell" ||
+      lower === "cmd.exe" ||
+      lower === "cmd"
+    ) {
+      return false;
+    }
   }
 
   const home = os.homedir();
@@ -91,20 +128,39 @@ function isExecutableInstalled(command: string): boolean {
     path.join(home, ".cargo", "bin"),
     path.join(home, ".gemini", "antigravity-cli", "bin")
   );
-  if (process.env.APPDATA) {
-    searchDirs.push(path.join(process.env.APPDATA, "npm"));
-  }
-  if (process.env.LOCALAPPDATA) {
+  if (process.platform === "win32") {
+    if (process.env.APPDATA) {
+      searchDirs.push(path.join(process.env.APPDATA, "npm"));
+    }
+    if (process.env.LOCALAPPDATA) {
+      searchDirs.push(
+        path.join(process.env.LOCALAPPDATA, "Programs", "antigravity", "bin"),
+        path.join(process.env.LOCALAPPDATA, "Programs", "antigravity"),
+        path.join(
+          process.env.LOCALAPPDATA,
+          "Programs",
+          "Antigravity IDE",
+          "bin"
+        )
+      );
+    }
+  } else {
     searchDirs.push(
-      path.join(process.env.LOCALAPPDATA, "Programs", "antigravity", "bin"),
-      path.join(process.env.LOCALAPPDATA, "Programs", "antigravity"),
-      path.join(process.env.LOCALAPPDATA, "Programs", "Antigravity IDE", "bin")
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/usr/bin",
+      path.join(home, ".npm-global", "bin"),
+      path.join(home, ".volta", "bin"),
+      path.join(home, ".asdf", "shims")
     );
   }
 
-  const exts = path.extname(command)
-    ? [""]
-    : [".exe", ".cmd", ".bat", ".ps1", ""];
+  const exts =
+    process.platform === "win32"
+      ? path.extname(command)
+        ? [""]
+        : [".exe", ".cmd", ".bat", ".ps1", ""]
+      : [""];
 
   for (const dir of searchDirs) {
     for (const ext of exts) {
@@ -1519,14 +1575,48 @@ function execGit(cwd: string, args: string[]): Promise<string> {
   });
 }
 
+function chainFallbackCommands(cmds: string[], isWin: boolean): string {
+  const clean = cmds.filter((c) => c && c.trim().length > 0);
+  if (clean.length === 0) return "";
+  if (clean.length === 1) return clean[0];
+  if (!isWin) {
+    return clean.join(" || ");
+  }
+  // PowerShell fallback chain
+  return clean
+    .map((c, idx) => (idx === 0 ? c : `if ($LASTEXITCODE -ne 0) { ${c} }`))
+    .join("; ");
+}
+
 function buildShellLaunch(
   session: CockpitSession,
   isResume: boolean
 ): {
-  shellPath: string;
-  shellArgs: string[];
+  shellPath?: string;
+  shellArgs?: string[];
   initialCommand?: string;
 } {
+  const isWin = process.platform === "win32";
+  const configuredShell = (
+    vscode.workspace
+      .getConfiguration("agentCockpit")
+      .get<string>("shellPath") || ""
+  ).trim();
+
+  const defaultShellSpec = (): { shellPath?: string; shellArgs?: string[] } => {
+    if (configuredShell) {
+      return { shellPath: configuredShell };
+    }
+    if (isWin) {
+      return {
+        shellPath: "powershell.exe",
+        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+      };
+    }
+    // On macOS & Linux, omit shellPath/shellArgs so VS Code uses the user's native default shell (zsh/bash)
+    return {};
+  };
+
   const trimmed = session.command.trim();
   const lower = trimmed.toLowerCase();
   const extraArgs = session.args.length > 0 ? ` ${session.args.join(" ")}` : "";
@@ -1535,36 +1625,41 @@ function buildShellLaunch(
     .replace(/"/g, "")
     .trim();
 
+  // Pure shell sessions
+  if (
+    lower === "shell" ||
+    lower === "zsh" ||
+    lower === "bash" ||
+    lower === "sh"
+  ) {
+    return defaultShellSpec();
+  }
   if (lower === "powershell.exe" || lower === "powershell") {
-    return {
-      shellPath: "powershell.exe",
-      shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-    };
+    return isWin
+      ? {
+          shellPath: "powershell.exe",
+          shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        }
+      : defaultShellSpec();
   }
   if (lower === "cmd.exe" || lower === "cmd") {
-    return { shellPath: "cmd.exe", shellArgs: [] };
+    return isWin ? { shellPath: "cmd.exe", shellArgs: [] } : defaultShellSpec();
   }
+
+  const base = defaultShellSpec();
 
   if (lower === "agy" || lower === "agy.cmd" || lower === "agy.exe") {
     if (isResume) {
-      if (sessionId) {
-        return {
-          shellPath: "powershell.exe",
-          shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-          initialCommand: `agy --conversation "${sessionId}"${extraArgs}; if ($LASTEXITCODE -ne 0) { agy --continue${extraArgs} }; if ($LASTEXITCODE -ne 0) { agy${extraArgs} }`,
-        };
-      }
-      return {
-        shellPath: "powershell.exe",
-        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-        initialCommand: `agy --continue${extraArgs}; if ($LASTEXITCODE -ne 0) { agy${extraArgs} }`,
-      };
+      const chain = sessionId
+        ? [
+            `agy --conversation "${sessionId}"${extraArgs}`,
+            `agy --continue${extraArgs}`,
+            `agy${extraArgs}`,
+          ]
+        : [`agy --continue${extraArgs}`, `agy${extraArgs}`];
+      return { ...base, initialCommand: chainFallbackCommands(chain, isWin) };
     }
-    return {
-      shellPath: "powershell.exe",
-      shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-      initialCommand: `agy${extraArgs}`,
-    };
+    return { ...base, initialCommand: `agy${extraArgs}` };
   }
 
   if (lower === "claude" || lower === "claude.exe") {
@@ -1572,25 +1667,18 @@ function buildShellLaunch(
       session.hasCustomTitle && safeName ? ` -n "${safeName}"` : "";
     if (isResume) {
       const targetKey = sessionId || session.cliSessionName;
-      if (targetKey) {
-        return {
-          shellPath: "powershell.exe",
-          shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-          initialCommand: `claude --resume "${targetKey}"${nameArg}${extraArgs}; if ($LASTEXITCODE -ne 0) { claude --continue${nameArg}${extraArgs} }; if ($LASTEXITCODE -ne 0) { claude${
-            sessionId ? ` --session-id "${sessionId}"` : ""
-          }${nameArg}${extraArgs} }`,
-        };
-      }
-      return {
-        shellPath: "powershell.exe",
-        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-        initialCommand: `claude --continue${nameArg}${extraArgs}; if ($LASTEXITCODE -ne 0) { claude${extraArgs} }`,
-      };
+      const chain = targetKey
+        ? [
+            `claude --resume "${targetKey}"${nameArg}${extraArgs}`,
+            `claude --continue${nameArg}${extraArgs}`,
+            `claude${sessionId ? ` --session-id "${sessionId}"` : ""}${nameArg}${extraArgs}`,
+          ]
+        : [`claude --continue${nameArg}${extraArgs}`, `claude${extraArgs}`];
+      return { ...base, initialCommand: chainFallbackCommands(chain, isWin) };
     }
 
     return {
-      shellPath: "powershell.exe",
-      shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+      ...base,
       initialCommand: `claude${
         sessionId ? ` --session-id "${sessionId}"` : ""
       }${nameArg}${extraArgs}`,
@@ -1600,15 +1688,15 @@ function buildShellLaunch(
   if (lower === "gemini" || lower === "gemini.cmd" || lower === "gemini.ps1") {
     if (isResume) {
       const resumeTarget = sessionId || "latest";
-      return {
-        shellPath: "powershell.exe",
-        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-        initialCommand: `gemini --resume "${resumeTarget}"${extraArgs}; if ($LASTEXITCODE -ne 0) { gemini --resume latest${extraArgs} }; if ($LASTEXITCODE -ne 0) { gemini${extraArgs} }`,
-      };
+      const chain = [
+        `gemini --resume "${resumeTarget}"${extraArgs}`,
+        `gemini --resume latest${extraArgs}`,
+        `gemini${extraArgs}`,
+      ];
+      return { ...base, initialCommand: chainFallbackCommands(chain, isWin) };
     }
     return {
-      shellPath: "powershell.exe",
-      shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+      ...base,
       initialCommand: `gemini${
         sessionId ? ` --session-id "${sessionId}"` : ""
       }${extraArgs}`,
@@ -1617,42 +1705,30 @@ function buildShellLaunch(
 
   if (lower === "codex" || lower === "codex.cmd" || lower === "codex.exe") {
     if (isResume) {
-      const resumeFirst = sessionId
-        ? `codex resume "${sessionId}"${extraArgs}; if ($LASTEXITCODE -ne 0) { codex resume --last${extraArgs} }`
-        : `codex resume --last${extraArgs}`;
-      return {
-        shellPath: "powershell.exe",
-        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-        initialCommand: `${resumeFirst}; if ($LASTEXITCODE -ne 0) { codex${extraArgs} }`,
-      };
+      const chain = sessionId
+        ? [
+            `codex resume "${sessionId}"${extraArgs}`,
+            `codex resume --last${extraArgs}`,
+            `codex${extraArgs}`,
+          ]
+        : [`codex resume --last${extraArgs}`, `codex${extraArgs}`];
+      return { ...base, initialCommand: chainFallbackCommands(chain, isWin) };
     }
-    return {
-      shellPath: "powershell.exe",
-      shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-      initialCommand: `codex${extraArgs}`,
-    };
+    return { ...base, initialCommand: `codex${extraArgs}` };
   }
 
   if (lower === "aider" || lower === "aider.exe") {
     if (isResume) {
-      return {
-        shellPath: "powershell.exe",
-        shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-        initialCommand: `aider --restore-chat-history${extraArgs}; if ($LASTEXITCODE -ne 0) { aider${extraArgs} }`,
-      };
+      const chain = [
+        `aider --restore-chat-history${extraArgs}`,
+        `aider${extraArgs}`,
+      ];
+      return { ...base, initialCommand: chainFallbackCommands(chain, isWin) };
     }
-    return {
-      shellPath: "powershell.exe",
-      shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-      initialCommand: `aider${extraArgs}`,
-    };
+    return { ...base, initialCommand: `aider${extraArgs}` };
   }
 
-  return {
-    shellPath: "powershell.exe",
-    shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-    initialCommand: `${trimmed}${extraArgs}`,
-  };
+  return { ...base, initialCommand: `${trimmed}${extraArgs}` };
 }
 
 class AgentCockpitProvider implements vscode.WebviewViewProvider {
@@ -1677,6 +1753,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
   }
 
   public getActiveSessionTimelineInfo(): {
+    sessionId: string;
     sessionTitle: string;
     entries: ChatTimelineEntry[];
   } {
@@ -1684,6 +1761,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
       this._sessions.find((s) => s.id === this._activeSessionId) ||
       this._sessions[this._sessions.length - 1];
     return {
+      sessionId: activeSessionObj?.id || "none",
       sessionTitle: activeSessionObj?.title || "",
       entries: extractSessionTimeline(activeSessionObj),
     };
@@ -1691,7 +1769,7 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 
   constructor(private readonly _context: vscode.ExtensionContext) {
     const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    this._currentCwd = wsFolder || "D:\\Thulir Inc";
+    this._currentCwd = wsFolder || os.homedir();
 
     this._soundEnabled = this._context.globalState.get<boolean>(
       SOUND_PREF_KEY,
@@ -1836,6 +1914,13 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
           "-Command",
           "[System.Media.SystemSounds]::Asterisk.Play()",
         ],
+        { timeout: 3000 },
+        () => {}
+      );
+    } else if (process.platform === "darwin") {
+      execFile(
+        "afplay",
+        ["/System/Library/Sounds/Glass.aiff"],
         { timeout: 3000 },
         () => {}
       );
@@ -2586,13 +2671,18 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
         ? vscode.TerminalLocation.Editor
         : vscode.TerminalLocation.Panel;
 
-    const terminal = vscode.window.createTerminal({
+    const termOpts: vscode.TerminalOptions = {
       name: termName,
       cwd: session.cwd,
-      shellPath: resolved.shellPath,
-      shellArgs: resolved.shellArgs,
       location: terminalLocation,
-    });
+    };
+    if (resolved.shellPath) {
+      termOpts.shellPath = resolved.shellPath;
+    }
+    if (resolved.shellArgs) {
+      termOpts.shellArgs = resolved.shellArgs;
+    }
+    const terminal = vscode.window.createTerminal(termOpts);
 
     terminal.show(false);
 
@@ -2953,19 +3043,23 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
    * in the current working directory (reusing an open Shell session or creating one).
    */
   private async _runCommandInShellSession(commandText: string) {
+    const isWin = process.platform === "win32";
     let shellSess = this._sessions.find(
       (s) =>
-        s.command.toLowerCase().includes("powershell") &&
+        (s.command.toLowerCase().includes("powershell") ||
+          s.command.toLowerCase() === "shell" ||
+          s.command.toLowerCase() === "zsh" ||
+          s.command.toLowerCase() === "bash") &&
         s.cwd.toLowerCase() === this._currentCwd.toLowerCase()
     );
 
     if (!shellSess) {
       await this.spawnSession({
-        title: "Shell",
+        title: isWin ? "Shell" : "Terminal",
         badge: ">_",
         color: "#64748b",
-        command: "powershell.exe",
-        args: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+        command: isWin ? "powershell.exe" : "shell",
+        args: isWin ? ["-NoLogo", "-ExecutionPolicy", "Bypass"] : [],
         cwd: this._currentCwd,
         location: this._defaultLocation,
       });
@@ -4680,8 +4774,8 @@ class AgentCockpitProvider implements vscode.WebviewViewProvider {
 }
 
 type TimelineTreeNode =
-  | { kind: "question"; entry: ChatTimelineEntry }
-  | { kind: "reply"; text: string }
+  | { kind: "question"; sessionId: string; entry: ChatTimelineEntry }
+  | { kind: "reply"; sessionId: string; turn: number; text: string }
   | { kind: "empty"; message: string };
 
 class ChatTimelineTreeProvider
@@ -4718,6 +4812,7 @@ class ChatTimelineTreeProvider
         element.message,
         vscode.TreeItemCollapsibleState.None
       );
+      item.id = "timeline:empty";
       item.iconPath = new vscode.ThemeIcon("info");
       return item;
     }
@@ -4727,19 +4822,27 @@ class ChatTimelineTreeProvider
         element.text,
         vscode.TreeItemCollapsibleState.None
       );
+      item.id = `timeline:r:${element.sessionId}:${element.turn}`;
       item.iconPath = new vscode.ThemeIcon("sparkle");
       item.tooltip = element.text;
       return item;
     }
 
-    const { entry } = element;
+    const { entry, sessionId } = element;
     const hasReply = Boolean(entry.replyPreview);
+    const cleanLabel =
+      entry.question
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim() || entry.question;
     const item = new vscode.TreeItem(
-      `#${entry.turn}  ${entry.question}`,
+      `#${entry.turn}  ${cleanLabel}`,
       hasReply
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None
     );
+    // Stable ID independent of prompt text so VS Code never loses track across refreshes
+    item.id = `timeline:q:${sessionId}:${entry.turn}`;
     item.description = entry.timeLabel || "";
     item.tooltip = new vscode.MarkdownString(
       `**#${entry.turn}**${entry.timeLabel ? ` · ${entry.timeLabel}` : ""}\n\n${entry.fullQuestion}` +
@@ -4763,11 +4866,22 @@ class ChatTimelineTreeProvider
           },
         ];
       }
-      return info.entries.map((entry) => ({ kind: "question", entry }));
+      return info.entries.map((entry) => ({
+        kind: "question",
+        sessionId: info.sessionId,
+        entry,
+      }));
     }
 
     if (element.kind === "question" && element.entry.replyPreview) {
-      return [{ kind: "reply", text: element.entry.replyPreview }];
+      return [
+        {
+          kind: "reply",
+          sessionId: element.sessionId,
+          turn: element.entry.turn,
+          text: element.entry.replyPreview,
+        },
+      ];
     }
 
     return [];
@@ -4844,7 +4958,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (!picked) return;
 
       const wsFolder =
-        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || "D:\\Thulir Inc";
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || os.homedir();
       const cwd = await vscode.window.showInputBox({
         prompt: "Working Directory (cwd)",
         value: wsFolder,

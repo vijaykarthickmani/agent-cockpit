@@ -44,7 +44,7 @@ Agent Cockpit is **CLI-agnostic** — it auto-detects whichever CLIs are install
 Install the `.vsix` package in VS Code (or any VS Code-compatible editor):
 
 ```powershell
-code --install-extension .\vscode-extension\agent-cockpit-vscode-0.1.1.vsix --force
+code --install-extension .\vscode-extension\agent-cockpit-vscode-0.1.2.vsix --force
 ```
 
 Then reload your window (`Ctrl+Shift+P` → **Developer: Reload Window**) and click the **Agent Cockpit** HUD icon in the Activity Bar.
