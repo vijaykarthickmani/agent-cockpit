@@ -1741,6 +1741,17 @@ class AgentCockpitProvider {
                 case "focusSession":
                     await this.focusOrRelaunchSessionById(msg.id);
                     break;
+                case "selectSession":
+                    if (typeof msg.id === "string") {
+                        this._activeSessionId = msg.id;
+                        await this.refreshWebviewState();
+                    }
+                    break;
+                case "stopSession":
+                    if (typeof msg.id === "string") {
+                        await this.stopSessionById(msg.id);
+                    }
+                    break;
                 case "relaunchSession":
                     await this.relaunchSessionById(msg.id, true);
                     break;
@@ -2069,6 +2080,27 @@ class AgentCockpitProvider {
         if (indexZeroBased < 0 || indexZeroBased >= this._sessions.length)
             return;
         void this.focusOrRelaunchSessionById(this._sessions[indexZeroBased].id);
+    }
+    async stopSessionById(id) {
+        const found = this._sessions.find((s) => s.id === id);
+        if (!found)
+            return;
+        if (!isTerminalAlive(found.terminal)) {
+            found.terminal = this._findOrphanTerminal(found);
+        }
+        if (isTerminalAlive(found.terminal)) {
+            try {
+                found.terminal.dispose();
+            }
+            catch {
+                // ignore
+            }
+        }
+        found.terminal = undefined;
+        found.status = "stopped";
+        this._persistSessions();
+        await this.refreshWebviewState();
+        vscode.window.setStatusBarMessage(`Agent Cockpit: Stopped "${found.title}" (click ▶ to resume anytime)`, 3000);
     }
     async focusOrRelaunchSessionById(id) {
         const found = this._sessions.find((s) => s.id === id);
@@ -3266,6 +3298,7 @@ class AgentCockpitProvider {
       at: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="2.6"/><path d="M10.6 8v.8a1.7 1.7 0 0 0 3.4 0V8a6 6 0 1 0-2.4 4.8"/></svg>',
       close: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
       play: '<svg class="ic-sm" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 3l8.5 5-8.5 5V3z"/></svg>',
+      stop: '<svg class="ic-sm" viewBox="0 0 16 16" fill="currentColor"><rect x="3.5" y="3.5" width="9" height="9" rx="1.2"/></svg>',
       pause: '<svg class="ic-sm" viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx="0.5"/><rect x="9" y="3" width="3" height="10" rx="0.5"/></svg>',
       plus: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>',
       ext: '<svg class="ic-sm" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h7v7"/><path d="M13 3L6 10"/></svg>',
@@ -3556,7 +3589,9 @@ class AgentCockpitProvider {
             cliTagLabel +
             ") · " +
             s.cwd +
-            (isStopped ? " · Click to resume" : " · Double-click title to rename");
+            (isStopped
+              ? " · Paused (click to view timeline, hover ▶ to resume)"
+              : " · Running (click to focus, hover ■ to stop)");
 
           const swatchesHtml = COLOR_PALETTE.map(
             (c) =>
@@ -3578,6 +3613,7 @@ class AgentCockpitProvider {
               stateBadgeHtml(s.status) +
               shortcutHtml +
               '<div class="row-actions">' +
+                '<button class="icon-action act-power" title="' + (isStopped ? "Resume session" : "Stop session (keeps history)") + '">' + (isStopped ? ICONS.play : ICONS.stop) + '</button>' +
                 '<button class="icon-action act-handoff" title="1-Click Handoff to another chat">' + ICONS.handoff + '</button>' +
                 '<button class="icon-action act-pin" title="' + (s.pinned ? "Unpin" : "Pin") + '">' + ICONS.pin + '</button>' +
                 '<button class="icon-action act-palette" title="Color">' + ICONS.color + '</button>' +
@@ -3595,7 +3631,14 @@ class AgentCockpitProvider {
 
           card.addEventListener("click", () => {
             vscode.postMessage({
-              type: isStopped ? "relaunchSession" : "focusSession",
+              type: isStopped ? "selectSession" : "focusSession",
+              id: s.id,
+            });
+          });
+          card.querySelector(".act-power").addEventListener("click", (e) => {
+            e.stopPropagation();
+            vscode.postMessage({
+              type: isStopped ? "relaunchSession" : "stopSession",
               id: s.id,
             });
           });

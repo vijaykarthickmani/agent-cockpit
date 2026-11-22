@@ -2,7 +2,7 @@
   "name": "agent-cockpit-vscode",
   "displayName": "Agent Cockpit — Multi-Agent CLI Terminal Manager",
   "description": "Run and switch between interactive CLI coding agents (Claude Code, Codex, Gemini CLI, shells) as full-height Editor Tabs with cwd picker, isolated Git worktrees, live git status/diff, and @file:line context injection.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "thulir-inc",
   "engines": {
     "vscode": "^1.85.0"
@@ -24,7 +24,7 @@
         {
           "id": "agent-cockpit",
           "title": "Agent Cockpit",
-          "icon": "resources/cockpit-icon.svg"
+          "icon": "resources/cockpit-hud.svg"
         }
       ]
     },
