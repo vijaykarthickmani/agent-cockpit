@@ -24,6 +24,21 @@ Modern CLI coding agents (`agy`, `claude`, `codex`, `gemini`) shine in a real in
 
 ---
 
+## Supported CLIs (Works with Every CLI)
+
+Agent Cockpit is **CLI-agnostic** — it auto-detects whichever CLIs are installed on your machine and supports full start, resume, Chat Timeline, and 1-Click Handoff across all major coding agents:
+
+| CLI | Start | Exact Resume / Continue | Chat Timeline & Handoff |
+| :--- | :--- | :--- | :---: |
+| **Claude Code (`claude`)** | `claude --session-id "<uuid>"` | `claude --resume "<id>"` → `--continue` | Full transcript |
+| **Antigravity (`agy`)** | `agy` | `agy --conversation "<id>"` → `--continue` | Full transcript |
+| **Gemini CLI (`gemini`)** | `gemini --session-id "<uuid>"` | `gemini --resume "<id>"` → `--resume latest` | Full transcript |
+| **Codex CLI (`codex`)** | `codex` | `codex resume "<id>"` → `resume --last` | Full transcript |
+| **Aider (`aider`)** | `aider` | `aider --restore-chat-history` | `.aider.chat.history.md` |
+| **PowerShell / CMD / Custom** | Runs any executable in saved `cwd` | Reopens in saved `cwd` | Workspace + Git handoff |
+
+---
+
 ## Installation
 
 ### VS Code / Antigravity IDE Extension

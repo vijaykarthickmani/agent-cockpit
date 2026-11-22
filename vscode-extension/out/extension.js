@@ -915,6 +915,20 @@ function extractTranscriptSummaryForHandoff(session) {
             }
         }
     }
+    // Fallback for Gemini CLI, Codex CLI, Aider, or any other supported transcript via extractSessionTimeline
+    const timelineFallback = extractSessionTimeline(session);
+    if (timelineFallback.length > 0) {
+        return {
+            userPrompts: timelineFallback
+                .slice(-5)
+                .map((e) => e.fullQuestion.replace(/\s+/g, " ").trim().slice(0, 320)),
+            assistantReplies: timelineFallback
+                .filter((e) => e.replyPreview)
+                .slice(-3)
+                .map((e) => (e.replyPreview || "").slice(0, 900)),
+            sourceFound: true,
+        };
+    }
     return { userPrompts: [], assistantReplies: [], sourceFound: false };
 }
 function formatIsoTimeShort(raw) {
@@ -926,13 +940,14 @@ function formatIsoTimeShort(raw) {
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 function extractSessionTimeline(session) {
-    if (!session || !session.cliSessionId)
+    if (!session)
         return [];
     const entries = [];
     const cmd = (session.command || "").trim().toLowerCase();
     const home = os.homedir();
     // 1. Antigravity (agy) transcript
-    if (cmd === "agy" || cmd === "agy.cmd" || cmd === "agy.exe") {
+    if ((cmd === "agy" || cmd === "agy.cmd" || cmd === "agy.exe") &&
+        session.cliSessionId) {
         const transcriptPath = path.join(home, ".gemini", "antigravity-cli", "brain", session.cliSessionId, ".system_generated", "logs", "transcript.jsonl");
         if (!fs.existsSync(transcriptPath))
             return [];
@@ -980,7 +995,7 @@ function extractSessionTimeline(session) {
         }
     }
     // 2. Claude Code transcript
-    if (cmd === "claude" || cmd === "claude.exe") {
+    if ((cmd === "claude" || cmd === "claude.exe") && session.cliSessionId) {
         const projectsRoot = path.join(home, ".claude", "projects");
         let jsonlPath = path.join(projectsRoot, claudeProjectSlug(session.cwd), `${session.cliSessionId}.jsonl`);
         if (!fs.existsSync(jsonlPath) && fs.existsSync(projectsRoot)) {
@@ -1054,6 +1069,170 @@ function extractSessionTimeline(session) {
         }
         catch {
             return [];
+        }
+    }
+    // 3. Gemini CLI (~/.gemini/tmp/<projectHash>/chats/session-*.json)
+    if (cmd === "gemini" || cmd === "gemini.cmd" || cmd === "gemini.ps1") {
+        const tmpRoot = path.join(home, ".gemini", "tmp");
+        if (fs.existsSync(tmpRoot)) {
+            try {
+                let bestFile = null;
+                for (const sub of fs.readdirSync(tmpRoot)) {
+                    const chatsDir = path.join(tmpRoot, sub, "chats");
+                    if (!fs.existsSync(chatsDir))
+                        continue;
+                    for (const f of fs.readdirSync(chatsDir)) {
+                        if (!f.endsWith(".json"))
+                            continue;
+                        const full = path.join(chatsDir, f);
+                        const stat = fs.statSync(full);
+                        if (session.cliSessionId && f.includes(session.cliSessionId)) {
+                            bestFile = { path: full, mtimeMs: Number.MAX_SAFE_INTEGER };
+                            break;
+                        }
+                        if (!bestFile || stat.mtimeMs > bestFile.mtimeMs) {
+                            bestFile = { path: full, mtimeMs: stat.mtimeMs };
+                        }
+                    }
+                }
+                if (bestFile) {
+                    const parsed = JSON.parse(fs.readFileSync(bestFile.path, "utf8"));
+                    const msgs = Array.isArray(parsed.messages) ? parsed.messages : [];
+                    for (const m of msgs) {
+                        const role = (m.type || m.role || "").toLowerCase();
+                        const content = typeof m.content === "string"
+                            ? m.content
+                            : Array.isArray(m.parts)
+                                ? m.parts.map((p) => p.text || "").join(" ")
+                                : "";
+                        const single = content.replace(/\s+/g, " ").trim();
+                        if (!single)
+                            continue;
+                        if (role === "user") {
+                            entries.push({
+                                turn: entries.length + 1,
+                                question: single.slice(0, 140),
+                                fullQuestion: content.trim(),
+                                timeLabel: formatIsoTimeShort(m.timestamp),
+                            });
+                        }
+                        else if ((role === "gemini" || role === "model" || role === "assistant") &&
+                            entries.length > 0) {
+                            entries[entries.length - 1].replyPreview = single.slice(0, 160);
+                        }
+                    }
+                    return entries;
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    // 4. Codex CLI (~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl)
+    if (cmd === "codex" || cmd === "codex.cmd" || cmd === "codex.exe") {
+        const codexRoot = path.join(home, ".codex", "sessions");
+        if (fs.existsSync(codexRoot)) {
+            try {
+                let bestPath = "";
+                let bestMtime = -1;
+                const walk = (dir, depth) => {
+                    if (depth > 4)
+                        return;
+                    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                        const full = path.join(dir, entry.name);
+                        if (entry.isDirectory()) {
+                            walk(full, depth + 1);
+                        }
+                        else if (entry.name.endsWith(".jsonl")) {
+                            const stat = fs.statSync(full);
+                            if (session.cliSessionId && entry.name.includes(session.cliSessionId)) {
+                                bestPath = full;
+                                bestMtime = Number.MAX_SAFE_INTEGER;
+                            }
+                            else if (stat.mtimeMs > bestMtime) {
+                                bestPath = full;
+                                bestMtime = stat.mtimeMs;
+                            }
+                        }
+                    }
+                };
+                walk(codexRoot, 0);
+                if (bestPath) {
+                    const lines = fs
+                        .readFileSync(bestPath, "utf8")
+                        .split(/\r?\n/)
+                        .filter((l) => l.trim());
+                    for (const line of lines) {
+                        try {
+                            const obj = JSON.parse(line);
+                            const payload = obj.payload || obj;
+                            const role = (payload.role || obj.role || "").toLowerCase();
+                            let text = "";
+                            if (typeof payload.message === "string") {
+                                text = payload.message;
+                            }
+                            else if (typeof payload.content === "string") {
+                                text = payload.content;
+                            }
+                            else if (Array.isArray(payload.content)) {
+                                text = payload.content
+                                    .map((p) => p.text || "")
+                                    .join(" ");
+                            }
+                            const single = text.replace(/\s+/g, " ").trim();
+                            if (!single)
+                                continue;
+                            if (role === "user" || payload.type === "user_message") {
+                                entries.push({
+                                    turn: entries.length + 1,
+                                    question: single.slice(0, 140),
+                                    fullQuestion: text.trim(),
+                                    timeLabel: formatIsoTimeShort(obj.timestamp),
+                                });
+                            }
+                            else if ((role === "assistant" || payload.type === "agent_message") &&
+                                entries.length > 0) {
+                                entries[entries.length - 1].replyPreview = single.slice(0, 160);
+                            }
+                        }
+                        catch {
+                            // ignore
+                        }
+                    }
+                    return entries;
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    // 5. Aider (<cwd>/.aider.chat.history.md)
+    if (cmd === "aider" || cmd === "aider.exe") {
+        const aiderHist = path.join(session.cwd, ".aider.chat.history.md");
+        if (fs.existsSync(aiderHist)) {
+            try {
+                const raw = fs.readFileSync(aiderHist, "utf8");
+                const blocks = raw.split(/^#### /m).slice(1);
+                for (const blk of blocks) {
+                    const lines = blk.split(/\r?\n/);
+                    const q = (lines[0] || "").trim();
+                    const rest = lines.slice(1).join(" ").replace(/\s+/g, " ").trim();
+                    if (q) {
+                        entries.push({
+                            turn: entries.length + 1,
+                            question: q.slice(0, 140),
+                            fullQuestion: q,
+                            replyPreview: rest ? rest.slice(0, 160) : undefined,
+                        });
+                    }
+                }
+                return entries;
+            }
+            catch {
+                // ignore
+            }
         }
     }
     return [];
@@ -1154,7 +1333,7 @@ function buildShellLaunch(session, isResume) {
             initialCommand: `claude${sessionId ? ` --session-id "${sessionId}"` : ""}${nameArg}${extraArgs}`,
         };
     }
-    if (lower === "gemini" || lower === "gemini.cmd") {
+    if (lower === "gemini" || lower === "gemini.cmd" || lower === "gemini.ps1") {
         if (isResume) {
             const resumeTarget = sessionId || "latest";
             return {
@@ -1166,17 +1345,39 @@ function buildShellLaunch(session, isResume) {
         return {
             shellPath: "powershell.exe",
             shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-            initialCommand: `gemini${extraArgs}`,
+            initialCommand: `gemini${sessionId ? ` --session-id "${sessionId}"` : ""}${extraArgs}`,
         };
     }
-    if (lower === "codex" || lower === "codex.cmd") {
+    if (lower === "codex" || lower === "codex.cmd" || lower === "codex.exe") {
+        if (isResume) {
+            const resumeFirst = sessionId
+                ? `codex resume "${sessionId}"${extraArgs}; if ($LASTEXITCODE -ne 0) { codex resume --last${extraArgs} }`
+                : `codex resume --last${extraArgs}`;
+            return {
+                shellPath: "powershell.exe",
+                shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+                initialCommand: `${resumeFirst}; if ($LASTEXITCODE -ne 0) { codex${extraArgs} }`,
+            };
+        }
+        return {
+            shellPath: "powershell.exe",
+            shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+            initialCommand: `codex${extraArgs}`,
+        };
+    }
+    if (lower === "aider" || lower === "aider.exe") {
         if (isResume) {
             return {
                 shellPath: "powershell.exe",
                 shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
-                initialCommand: `codex resume --last${extraArgs}; if ($LASTEXITCODE -ne 0) { codex${extraArgs} }`,
+                initialCommand: `aider --restore-chat-history${extraArgs}; if ($LASTEXITCODE -ne 0) { aider${extraArgs} }`,
             };
         }
+        return {
+            shellPath: "powershell.exe",
+            shellArgs: ["-NoLogo", "-ExecutionPolicy", "Bypass"],
+            initialCommand: `aider${extraArgs}`,
+        };
     }
     return {
         shellPath: "powershell.exe",
@@ -1978,8 +2179,11 @@ class AgentCockpitProvider {
         const id = `sess-${Date.now().toString(36)}-${Math.random()
             .toString(36)
             .slice(2, 6)}`;
-        const isClaude = params.command.toLowerCase().startsWith("claude");
-        const cliSessionId = isClaude ? crypto.randomUUID() : undefined;
+        const lowerCmd = params.command.toLowerCase();
+        const supportsPreAssignedSessionId = lowerCmd.startsWith("claude") || lowerCmd.startsWith("gemini");
+        const cliSessionId = supportsPreAssignedSessionId
+            ? crypto.randomUUID()
+            : undefined;
         const session = {
             id,
             cliSessionId,
