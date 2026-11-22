@@ -22,6 +22,6 @@ Run, organize, hand off, and schedule multiple interactive CLI coding agents (`c
 
 ## Issues & Feedback
 
-- [Report a Bug](https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+)
-- [Request a Feature / Give Feedback](https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+)
-- [GitHub Repository](https://github.com/vijaykarthick4588/agent-cockpit)
+- [Report a Bug](https://github.com/vijaykarthickmani/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+)
+- [Request a Feature / Give Feedback](https://github.com/vijaykarthickmani/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+)
+- [GitHub Repository](https://github.com/vijaykarthickmani/agent-cockpit)

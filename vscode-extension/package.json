@@ -6,12 +6,12 @@
   "publisher": "thulir-inc",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vijaykarthick4588/agent-cockpit.git"
+    "url": "https://github.com/vijaykarthickmani/agent-cockpit.git"
   },
   "bugs": {
-    "url": "https://github.com/vijaykarthick4588/agent-cockpit/issues"
+    "url": "https://github.com/vijaykarthickmani/agent-cockpit/issues"
   },
-  "homepage": "https://github.com/vijaykarthick4588/agent-cockpit#readme",
+  "homepage": "https://github.com/vijaykarthickmani/agent-cockpit#readme",
   "engines": {
     "vscode": "^1.85.0"
   },

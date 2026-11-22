@@ -3,8 +3,8 @@
 > A terminal-first multi-agent workspace for **VS Code** (and VS Code-compatible editors) — run, switch, organize, hand off, and schedule interactive CLI coding agents (`claude`, `codex`, `gemini`, `aider`, `agy`, `powershell`, `cmd`, or any custom CLI) without wrapping them in chat bubbles.
 
 [![Interactive Demo](https://img.shields.io/badge/Live%20Demo-docs%2Findex.html-3b82f6?style=flat-square)](docs/index.html)
-[![Report Bug](https://img.shields.io/badge/Report%20a%20Bug-GitHub%20Issues-ef4444?style=flat-square)](https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+)
-[![Feature Request](https://img.shields.io/badge/Feature%20Request%20%2F%20Feedback-GitHub%20Issues-10b981?style=flat-square)](https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+)
+[![Report Bug](https://img.shields.io/badge/Report%20a%20Bug-GitHub%20Issues-ef4444?style=flat-square)](https://github.com/vijaykarthickmani/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+)
+[![Feature Request](https://img.shields.io/badge/Feature%20Request%20%2F%20Feedback-GitHub%20Issues-10b981?style=flat-square)](https://github.com/vijaykarthickmani/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+)
 
 ---
 
@@ -89,7 +89,7 @@ Then reload your window (`Ctrl+Shift+P` → **Developer: Reload Window**) and cl
 
 ## Interactive Demo Page
 
-Open [docs/index.html](docs/index.html) directly in your browser (or enable **GitHub Pages** from `/docs` on `main` to publish it at `https://vijaykarthick4588.github.io/agent-cockpit/`).
+Open [docs/index.html](docs/index.html) directly in your browser (or enable **GitHub Pages** from `/docs` on `main` to publish it at `https://vijaykarthickmani.github.io/agent-cockpit/`).
 
 ---
 
@@ -97,9 +97,9 @@ Open [docs/index.html](docs/index.html) directly in your browser (or enable **Gi
 
 Found a bug or have an idea to make Agent Cockpit better?
 
-- **Report a Bug**: [Create a Bug Ticket](https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+)
-- **Request a Feature / Feedback**: [Submit Feature Request](https://github.com/vijaykarthick4588/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+)
-- **Browse Open Issues**: [github.com/vijaykarthick4588/agent-cockpit/issues](https://github.com/vijaykarthick4588/agent-cockpit/issues)
+- **Report a Bug**: [Create a Bug Ticket](https://github.com/vijaykarthickmani/agent-cockpit/issues/new?labels=bug&title=%5BBug%5D+)
+- **Request a Feature / Feedback**: [Submit Feature Request](https://github.com/vijaykarthickmani/agent-cockpit/issues/new?labels=enhancement&title=%5BFeature%5D+)
+- **Browse Open Issues**: [github.com/vijaykarthickmani/agent-cockpit/issues](https://github.com/vijaykarthickmani/agent-cockpit/issues)
 
 ---
 
