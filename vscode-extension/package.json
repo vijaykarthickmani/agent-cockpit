@@ -34,6 +34,10 @@
           "type": "webview",
           "id": "agentCockpit.sidebarView",
           "name": "Cockpit Control"
+        },
+        {
+          "id": "agentCockpit.chatTimeline",
+          "name": "Chat Timeline"
         }
       ]
     },
@@ -83,6 +87,16 @@
       {
         "command": "agentCockpit.switchSession5",
         "title": "Agent Cockpit: Switch to Agent Session 5"
+      },
+      {
+        "command": "agentCockpit.copyTimelineQuestion",
+        "title": "Copy Question",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "agentCockpit.reaskTimelineQuestion",
+        "title": "Insert Question into Active Terminal",
+        "icon": "$(reply)"
       }
     ],
     "menus": {
@@ -120,6 +134,18 @@
         {
           "command": "agentCockpit.sendHighlightedToTerminal",
           "group": "1_modification@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agentCockpit.copyTimelineQuestion",
+          "when": "view == agentCockpit.chatTimeline && viewItem == timelineQuestion",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentCockpit.reaskTimelineQuestion",
+          "when": "view == agentCockpit.chatTimeline && viewItem == timelineQuestion",
+          "group": "inline@2"
         }
       ]
     },

@@ -1199,6 +1199,18 @@ class AgentCockpitProvider {
     _lastUsedCliId;
     _jobs = [];
     _pollTimer;
+    _onStateChanged;
+    setOnStateChanged(cb) {
+        this._onStateChanged = cb;
+    }
+    getActiveSessionTimelineInfo() {
+        const activeSessionObj = this._sessions.find((s) => s.id === this._activeSessionId) ||
+            this._sessions[this._sessions.length - 1];
+        return {
+            sessionTitle: activeSessionObj?.title || "",
+            entries: extractSessionTimeline(activeSessionObj),
+        };
+    }
     constructor(_context) {
         this._context = _context;
         const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -2557,9 +2569,10 @@ class AgentCockpitProvider {
         }
     }
     async refreshWebviewState() {
+        this._syncLiveness();
+        this._onStateChanged?.();
         if (!this._view)
             return;
-        this._syncLiveness();
         const gitInfo = await this._getGitChanges(this._currentCwd);
         const handoffContent = this._readHandoffContent();
         const mcpServers = discoverMcpServers(this._currentCwd);
@@ -3181,7 +3194,7 @@ class AgentCockpitProvider {
     }
     .footer-tabs {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 4px;
     }
     .timeline-header {
@@ -3371,13 +3384,11 @@ class AgentCockpitProvider {
 
   <!-- Material Footer -->
   <div class="footer-bar">
-    <div id="outline-drawer" class="drawer-pane"></div>
     <div id="mcp-drawer" class="drawer-pane"></div>
     <div id="skills-drawer" class="drawer-pane"></div>
     <div id="jobs-drawer" class="drawer-pane"></div>
 
     <div class="footer-tabs">
-      <button id="tab-outline" class="footer-btn" title="Question timeline / outline for the selected chat">Outline (<span id="outline-count">0</span>)</button>
       <button id="tab-mcp" class="footer-btn" title="View MCP servers & live status">MCP (<span id="mcp-count">0</span>)</button>
       <button id="tab-skills" class="footer-btn" title="View available Skills & Subagents">Skills (<span id="skills-count">0</span>)</button>
       <button id="tab-jobs" class="footer-btn" title="Manage automated scheduled CLI jobs">Jobs (<span id="jobs-count">0</span>)</button>
@@ -3439,17 +3450,14 @@ class AgentCockpitProvider {
     const customGo = document.getElementById("custom-go");
     const sessionList = document.getElementById("session-list");
 
-    const outlineDrawer = document.getElementById("outline-drawer");
     const mcpDrawer = document.getElementById("mcp-drawer");
     const skillsDrawer = document.getElementById("skills-drawer");
     const jobsDrawer = document.getElementById("jobs-drawer");
 
-    const outlineCount = document.getElementById("outline-count");
     const mcpCount = document.getElementById("mcp-count");
     const skillsCount = document.getElementById("skills-count");
     const jobsCount = document.getElementById("jobs-count");
 
-    const tabOutline = document.getElementById("tab-outline");
     const tabMcp = document.getElementById("tab-mcp");
     const tabSkills = document.getElementById("tab-skills");
     const tabJobs = document.getElementById("tab-jobs");
@@ -3465,22 +3473,19 @@ class AgentCockpitProvider {
 
     function setFooterDrawer(which) {
       state.activeFooter = state.activeFooter === which ? null : which;
-      outlineDrawer.classList.toggle("open", state.activeFooter === "outline");
       mcpDrawer.classList.toggle("open", state.activeFooter === "mcp");
       skillsDrawer.classList.toggle("open", state.activeFooter === "skills");
       jobsDrawer.classList.toggle("open", state.activeFooter === "jobs");
 
-      tabOutline.classList.toggle("active", state.activeFooter === "outline");
       tabMcp.classList.toggle("active", state.activeFooter === "mcp");
       tabSkills.classList.toggle("active", state.activeFooter === "skills");
       tabJobs.classList.toggle("active", state.activeFooter === "jobs");
 
-      if (state.activeFooter === "mcp" || state.activeFooter === "outline") {
+      if (state.activeFooter === "mcp") {
         vscode.postMessage({ type: "refreshGit" });
       }
     }
 
-    tabOutline.addEventListener("click", () => setFooterDrawer("outline"));
     tabMcp.addEventListener("click", () => setFooterDrawer("mcp"));
     tabSkills.addEventListener("click", () => setFooterDrawer("skills"));
     tabJobs.addEventListener("click", () => setFooterDrawer("jobs"));
@@ -3792,73 +3797,6 @@ class AgentCockpitProvider {
         regularSessions.forEach((s) => sessionList.appendChild(renderSessionCard(s)));
       }
 
-      // Render Chat Question Timeline / Outline for Selected Session
-      const timeline = msg.activeTimeline || [];
-      outlineCount.textContent = String(timeline.length);
-      outlineDrawer.innerHTML = "";
-      const tlHeader = document.createElement("div");
-      tlHeader.className = "timeline-header";
-      tlHeader.innerHTML =
-        '<span>Timeline: ' + (msg.activeSessionTitle || "No chat selected") + '</span>' +
-        '<span>' + timeline.length + ' Qs</span>';
-      outlineDrawer.appendChild(tlHeader);
-
-      if (timeline.length === 0) {
-        const emptyTl = document.createElement("div");
-        emptyTl.style.cssText = "color:var(--md-muted);text-align:center;padding:8px 0;font-size:10.5px;";
-        emptyTl.textContent = "No user questions recorded yet for this chat";
-        outlineDrawer.appendChild(emptyTl);
-      } else {
-        timeline.forEach((item) => {
-          const row = document.createElement("div");
-          row.className = "timeline-item";
-          row.title =
-            "#" +
-            item.turn +
-            ": " +
-            item.fullQuestion +
-            (item.replyPreview ? "\\n\\nAI: " + item.replyPreview : "") +
-            "\\n\\nClick to find in terminal";
-
-          row.innerHTML =
-            '<span class="timeline-dot"></span>' +
-            '<div class="timeline-body">' +
-              '<div class="timeline-meta">' +
-                '<span>#' + item.turn + '</span>' +
-                (item.timeLabel ? '<span>' + item.timeLabel + '</span>' : '') +
-              '</div>' +
-              '<div class="timeline-q"></div>' +
-            '</div>' +
-            '<div class="timeline-actions">' +
-              '<button class="icon-action tl-copy" title="Copy full question">📋</button>' +
-              '<button class="icon-action tl-reask" title="Insert into active terminal">↻</button>' +
-            '</div>';
-          row.querySelector(".timeline-q").textContent = item.question;
-
-          row.addEventListener("click", () => {
-            vscode.postMessage({
-              type: "jumpToTimelineEntry",
-              question: item.fullQuestion,
-            });
-          });
-          row.querySelector(".tl-copy").addEventListener("click", (e) => {
-            e.stopPropagation();
-            vscode.postMessage({
-              type: "copyToClipboard",
-              text: item.fullQuestion,
-            });
-          });
-          row.querySelector(".tl-reask").addEventListener("click", (e) => {
-            e.stopPropagation();
-            vscode.postMessage({
-              type: "reaskTimelineEntry",
-              question: item.fullQuestion,
-            });
-          });
-          outlineDrawer.appendChild(row);
-        });
-      }
-
       // Render MCP Servers & Status
       const mcps = msg.mcpServers || [];
       mcpCount.textContent = String(mcps.length);
@@ -3972,9 +3910,97 @@ class AgentCockpitProvider {
 </html>`;
     }
 }
+class ChatTimelineTreeProvider {
+    _cockpit;
+    _onDidChangeTreeData = new vscode.EventEmitter();
+    onDidChangeTreeData = this._onDidChangeTreeData.event;
+    _treeView;
+    constructor(_cockpit) {
+        this._cockpit = _cockpit;
+    }
+    bindTreeView(tv) {
+        this._treeView = tv;
+        this._updateHeader();
+    }
+    refresh() {
+        this._updateHeader();
+        this._onDidChangeTreeData.fire();
+    }
+    _updateHeader() {
+        if (!this._treeView)
+            return;
+        const info = this._cockpit.getActiveSessionTimelineInfo();
+        this._treeView.description = info.sessionTitle
+            ? `${info.sessionTitle} (${info.entries.length})`
+            : undefined;
+    }
+    getTreeItem(element) {
+        if (element.kind === "empty") {
+            const item = new vscode.TreeItem(element.message, vscode.TreeItemCollapsibleState.None);
+            item.iconPath = new vscode.ThemeIcon("info");
+            return item;
+        }
+        if (element.kind === "reply") {
+            const item = new vscode.TreeItem(element.text, vscode.TreeItemCollapsibleState.None);
+            item.iconPath = new vscode.ThemeIcon("sparkle");
+            item.tooltip = element.text;
+            return item;
+        }
+        const { entry } = element;
+        const hasReply = Boolean(entry.replyPreview);
+        const item = new vscode.TreeItem(`#${entry.turn}  ${entry.question}`, hasReply
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.None);
+        item.description = entry.timeLabel || "";
+        item.tooltip = new vscode.MarkdownString(`**#${entry.turn}**${entry.timeLabel ? ` · ${entry.timeLabel}` : ""}\n\n${entry.fullQuestion}` +
+            (entry.replyPreview ? `\n\n---\n*AI:* ${entry.replyPreview}` : ""));
+        item.iconPath = new vscode.ThemeIcon("comment-discussion");
+        item.contextValue = "timelineQuestion";
+        return item;
+    }
+    getChildren(element) {
+        if (!element) {
+            const info = this._cockpit.getActiveSessionTimelineInfo();
+            if (info.entries.length === 0) {
+                return [
+                    {
+                        kind: "empty",
+                        message: info.sessionTitle
+                            ? "No user questions recorded yet"
+                            : "Select a chat session to view timeline",
+                    },
+                ];
+            }
+            return info.entries.map((entry) => ({ kind: "question", entry }));
+        }
+        if (element.kind === "question" && element.entry.replyPreview) {
+            return [{ kind: "reply", text: element.entry.replyPreview }];
+        }
+        return [];
+    }
+}
 function activate(context) {
     const provider = new AgentCockpitProvider(context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(AgentCockpitProvider.viewType, provider, { webviewOptions: { retainContextWhenHidden: true } }));
+    const timelineProvider = new ChatTimelineTreeProvider(provider);
+    const timelineTreeView = vscode.window.createTreeView("agentCockpit.chatTimeline", {
+        treeDataProvider: timelineProvider,
+        showCollapseAll: true,
+    });
+    timelineProvider.bindTreeView(timelineTreeView);
+    provider.setOnStateChanged(() => timelineProvider.refresh());
+    context.subscriptions.push(timelineTreeView);
+    context.subscriptions.push(vscode.commands.registerCommand("agentCockpit.copyTimelineQuestion", async (node) => {
+        if (node && node.kind === "question") {
+            await vscode.env.clipboard.writeText(node.entry.fullQuestion);
+            vscode.window.setStatusBarMessage(`Copied question #${node.entry.turn} to clipboard`, 2500);
+        }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand("agentCockpit.reaskTimelineQuestion", async (node) => {
+        if (node && node.kind === "question") {
+            await provider.sendTextToActiveAgent(node.entry.fullQuestion, false);
+        }
+    }));
     context.subscriptions.push(vscode.commands.registerCommand("agentCockpit.newSession", async () => {
         const installed = getInstalledPresets();
         const picked = await vscode.window.showQuickPick([
